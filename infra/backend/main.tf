@@ -50,7 +50,7 @@ resource "aws_cloudwatch_log_group" "service" {
 }
 
 resource "aws_secretsmanager_secret" "runtime" {
-  for_each = toset(["database_url", "valkey_url"])
+  for_each = toset(["database_url", "valkey_url", "cursor_hmac_key"])
 
   name                    = replace("${local.name_prefix}/runtime/${each.key}", "_", "-")
   recovery_window_in_days = var.secret_recovery_window_days
@@ -286,6 +286,10 @@ resource "aws_ecs_task_definition" "service" {
         {
           name      = "VALKEY_URL"
           valueFrom = aws_secretsmanager_secret.runtime["valkey_url"].arn
+        },
+        {
+          name      = "CURSOR_HMAC_KEY"
+          valueFrom = aws_secretsmanager_secret.runtime["cursor_hmac_key"].arn
         }
       ]
       logConfiguration = {

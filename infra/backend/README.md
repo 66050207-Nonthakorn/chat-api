@@ -8,11 +8,11 @@ This Terraform root manages backend-owned AWS resources only. It consumes a VPC,
 - An ECS cluster and optional Fargate API and worker services with fixed task counts, private ENIs, digest-pinned images, and rolling-deployment rollback.
 - Private, encrypted RDS PostgreSQL with managed master credentials, automated backups, PostgreSQL log exports, deletion protection, and final snapshots.
 - Private, encrypted, TLS-only node-based ElastiCache Valkey with an AUTH token sent through the provider's write-only argument.
-- Separate execution and application roles for each service. Execution roles can pull only their service's ECR image, write to that service's log group, and read the two runtime connection secrets. Application task roles have no AWS permissions.
-- Secrets Manager secret shells for `DATABASE_URL` and `VALKEY_URL`. Terraform does not create secret versions or retain their values in state.
+- Separate execution and application roles for each service. Execution roles can pull only their service's ECR image, write to that service's log group, and read only the three runtime secrets. Application task roles have no AWS permissions.
+- Secrets Manager secret shells for `DATABASE_URL`, `VALKEY_URL`, and `CURSOR_HMAC_KEY`. Terraform does not create secret versions or retain their values in state.
 - Short-retention CloudWatch log groups, an ECS/RDS/Valkey dashboard, and CPU/storage alarms. Alerts are visible in CloudWatch; no notification destination is created here. The Go backend does not yet export distributed traces, so this infrastructure does not claim OpenTelemetry trace coverage.
 
-The RDS-managed master secret is separate from the application connection secret and is not readable by ECS tasks. Create a least-privilege database user for the application and set its connection URL in the runtime secret. Set the Valkey URL as `rediss://:<URL-encoded-token>@<private-endpoint>:6379/0`; the URL and ElastiCache AUTH token must match. ECS injects both secret values at task launch, so a new task deployment is needed after changing either value.
+The RDS-managed master secret is separate from the application connection secret and is not readable by ECS tasks. Create a least-privilege database user for the application and set its connection URL in the runtime secret. Set the Valkey URL as `rediss://:<URL-encoded-token>@<private-endpoint>:6379/0`; the URL and ElastiCache AUTH token must match. Supply a random `CURSOR_HMAC_KEY` of at least 32 bytes. ECS injects all three secret values at task launch, so a new task deployment is needed after changing a value.
 
 The ECS task execution role is the role ECS uses to retrieve Secrets Manager values and pull images; the task role is what application code receives. Keep the database master credential out of both task roles. See [ECS secret injection requirements](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/specifying-sensitive-data-tutorial.html) and [RDS-managed master credentials](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/rds-secrets-manager.html).
 
@@ -31,7 +31,7 @@ terraform init `
 
 The deployment identity needs `s3:ListBucket` restricted to the state prefix, `s3:GetObject` and `s3:PutObject` on that state's object, and `s3:GetObject`, `s3:PutObject`, and `s3:DeleteObject` on its `.tflock` object. Add only the necessary KMS key permissions if the bucket uses a customer-managed key. Keep read access limited because reading state can reveal sensitive infrastructure data. Preserve the bucket, state objects, and lock configuration when the application stack is cleaned up; remove them only through a separately approved state-retirement process after all environments are decommissioned. See the official [backend permission and lock-file requirements](https://developer.hashicorp.com/terraform/language/backend/s3#permissions-required).
 
-The root defaults `enable_ecs_services` to `false`, allowing infrastructure and ECR to be prepared before application images or runtime secret values exist. Once ECR images have been pushed by digest and both secret versions are active, enable the ECS services. Never apply the example values below: their account/network identifiers and image digests are deliberately fake, and `offline_validation` disables provider identity checks.
+The root defaults `enable_ecs_services` to `false`, allowing infrastructure and ECR to be prepared before application images or runtime secret values exist. Once ECR images have been pushed by digest and all three secret versions are active, enable the ECS services. Never apply the example values below: their account/network identifiers and image digests are deliberately fake, and `offline_validation` disables provider identity checks.
 
 ## Non-applying local validation
 
@@ -50,7 +50,7 @@ Example values for `db.t4g.small`, 20 GiB gp3, a single `cache.t4g.micro` node, 
 1. Confirm the AWS account and plan, region, remaining credits, service availability/quotas, and an approved cost window. The infrastructure readiness reference says these remain unconfirmed.
 2. Have the shared network owner supply at least two private subnet IDs in different AZs in the given VPC, the shared ALB security group, an existing API target group with target type `ip` and `/health/ready`, and an egress path. This module adds only task/data security groups and never creates an ALB or route.
 3. Configure remote S3 state and lock access before running a plan intended for apply. Keep state separate from application resources.
-4. Apply with `enable_ecs_services=false`, provision a database application user, push immutable API/worker images to the created ECR repositories, and populate both runtime Secrets Manager secret shells outside Terraform.
+4. Apply with `enable_ecs_services=false`, provision a database application user, push immutable API/worker images to the created ECR repositories, and populate the three runtime Secrets Manager secret shells outside Terraform.
 5. Set the real image digests and `enable_ecs_services=true`, review the plan, then apply through the approved AWS identity. The API listens on port 8080. The ALB health check must use `/health/ready`; public ingress and TLS remain shared-stack responsibilities.
 
 This module does not configure schema migration execution, Cognito, OTel instrumentation/collector, autoscaling, frontend hosting, or external notification delivery. The current app has no production authentication adapter; do not treat ECS provisioning as production readiness.

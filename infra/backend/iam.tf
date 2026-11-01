@@ -74,7 +74,7 @@ data "aws_iam_policy_document" "execution" {
   }
 
   statement {
-    sid    = "ReadOnlyRuntimeConnectionSecrets"
+    sid    = "ReadOnlyRuntimeSecrets"
     effect = "Allow"
     actions = [
       "secretsmanager:DescribeSecret",
@@ -83,6 +83,7 @@ data "aws_iam_policy_document" "execution" {
     resources = [
       aws_secretsmanager_secret.runtime["database_url"].arn,
       aws_secretsmanager_secret.runtime["valkey_url"].arn,
+      aws_secretsmanager_secret.runtime["cursor_hmac_key"].arn,
     ]
   }
 }
