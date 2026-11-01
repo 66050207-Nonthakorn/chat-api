@@ -1,0 +1,9 @@
+/tmp/
+/bin/
+/dist/
+/coverage/
+/vendor/
+*.test
+.env
+.env.*
+!.env.example
