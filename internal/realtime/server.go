@@ -131,7 +131,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		apierror.Write(w, http.StatusBadRequest, "INVALID_REQUEST", "Query parameters are not supported", false, nil)
 		return
 	}
-	if !sameHostOrigin(r) {
+	if !s.originAllowed(r) {
 		apierror.Write(w, http.StatusForbidden, "ORIGIN_NOT_ALLOWED", "Origin is not allowed", false, nil)
 		return
 	}
@@ -161,9 +161,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		apierror.Write(w, http.StatusServiceUnavailable, "DEPENDENCY_UNAVAILABLE", "The WebSocket service is shutting down", true, nil)
 		return
 	}
-	connection, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		Subprotocols: []string{webSocketProtocol},
-	})
+	acceptOptions := &websocket.AcceptOptions{Subprotocols: []string{webSocketProtocol}}
+	if s.config.AppOrigin != "" {
+		acceptOptions.OriginPatterns = []string{s.config.AppOrigin}
+	}
+	connection, err := websocket.Accept(w, r, acceptOptions)
 	if err != nil {
 		return
 	}
@@ -397,6 +399,14 @@ func sameHostOrigin(r *http.Request) bool {
 	return strings.EqualFold(parsed.Host, r.Host)
 }
 
+func (s *Server) originAllowed(r *http.Request) bool {
+	if s.config.AppOrigin == "" {
+		return sameHostOrigin(r)
+	}
+	origins := r.Header.Values("Origin")
+	return len(origins) == 1 && origins[0] == s.config.AppOrigin
+}
+
 func requestsSubprotocol(r *http.Request, wanted string) bool {
 	for _, header := range r.Header.Values("Sec-WebSocket-Protocol") {
 		for _, token := range strings.Split(header, ",") {
@@ -482,6 +492,15 @@ func (c *socket) handleCommand(messageType websocket.MessageType, payload []byte
 		}
 		return c.unsubscribe(*command.RequestID, command.RoomID)
 	case "ping":
+		valid, err := c.server.touchSessionIdle(c.ctx, c.principal)
+		if err != nil {
+			c.stop(websocket.StatusTryAgainLater, "")
+			return false
+		}
+		if !valid {
+			c.stop(4401, "")
+			return false
+		}
 		return c.respond(struct {
 			Type      string `json:"type"`
 			RequestID string `json:"request_id"`
@@ -490,6 +509,36 @@ func (c *socket) handleCommand(messageType websocket.MessageType, payload []byte
 		c.respondError(command.RequestID, "INVALID_REQUEST", "Unknown WebSocket command", false)
 		return true
 	}
+}
+
+func (s *Server) touchSessionIdle(parent context.Context, principal auth.Principal) (bool, error) {
+	if principal.SessionID == "" {
+		return s.sessionValid(parent, principal)
+	}
+	if !uuid.IsCanonical(principal.SessionID) || !uuid.IsCanonical(principal.UserID) {
+		return false, nil
+	}
+	ctx, cancel := context.WithTimeout(parent, queryTimeout)
+	defer cancel()
+	var sessionID string
+	err := s.pool.QueryRow(ctx, `
+		UPDATE app_sessions sessions
+		SET last_seen_at = clock_timestamp(),
+		    idle_expires_at = LEAST(sessions.expires_at, clock_timestamp() + interval '30 minutes')
+		FROM app_users users
+		WHERE sessions.session_id = $1::uuid
+		  AND sessions.user_id = $2::uuid
+		  AND sessions.user_id = users.user_id
+		  AND users.is_active
+		  AND sessions.auth_epoch = users.auth_epoch
+		  AND sessions.revoked_at IS NULL
+		  AND sessions.expires_at > clock_timestamp()
+		  AND sessions.idle_expires_at > clock_timestamp()
+		RETURNING sessions.session_id::text`, principal.SessionID, principal.UserID).Scan(&sessionID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 func (c *socket) subscribe(requestID, roomID string) bool {

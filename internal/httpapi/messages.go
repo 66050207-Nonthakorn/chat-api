@@ -85,6 +85,15 @@ func (h *handler) sendMessage(w http.ResponseWriter, r *http.Request, roomID str
 		return
 	}
 	defer func() { _ = transaction.Rollback(context.Background()) }()
+	validSession, err := auth.LockActiveSession(ctx, transaction, principal)
+	if err != nil {
+		dependencyUnavailable(w, r)
+		return
+	}
+	if !validSession {
+		writeError(w, r, http.StatusUnauthorized, "UNAUTHENTICATED", "Authentication required", false, nil)
+		return
+	}
 
 	var displayName string
 	err = transaction.QueryRow(ctx, `

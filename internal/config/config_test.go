@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"encoding/base64"
 	"testing"
 
 	"cloudchat/internal/config"
@@ -59,6 +60,59 @@ func TestProductionRequiresStrongCursorSigningKey(t *testing.T) {
 	}
 }
 
+func TestProductionRequiresOIDCAndSessionEncryptionConfig(t *testing.T) {
+	setValidRuntimeEnv(t, "production")
+	t.Setenv("APP_ORIGIN", "")
+	t.Setenv("OIDC_ISSUER", "")
+	t.Setenv("OIDC_CLIENT_ID", "")
+	t.Setenv("OIDC_CLIENT_SECRET", "")
+	t.Setenv("OIDC_REDIRECT_URL", "")
+	t.Setenv("SESSION_ENCRYPTION_CURRENT_KEY_ID", "")
+	t.Setenv("SESSION_ENCRYPTION_KEYS", "")
+	if _, err := config.Load(); err == nil {
+		t.Fatal("production configuration loaded without backend-managed OIDC session settings")
+	}
+}
+
+func TestProductionLoadsSessionEncryptionKeyRing(t *testing.T) {
+	setValidRuntimeEnv(t, "production")
+	t.Setenv("APP_ORIGIN", "https://chat.example.test")
+	t.Setenv("OIDC_ISSUER", "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_example")
+	t.Setenv("OIDC_CLIENT_ID", "example-client")
+	t.Setenv("OIDC_CLIENT_SECRET", "example-secret")
+	t.Setenv("OIDC_REDIRECT_URL", "https://chat.example.test/auth/callback")
+	t.Setenv("SESSION_ENCRYPTION_CURRENT_KEY_ID", "current")
+	t.Setenv("SESSION_ENCRYPTION_KEYS", `{"current":"`+base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))+`","previous":"`+base64.StdEncoding.EncodeToString([]byte("abcdef0123456789abcdef0123456789"))+`"}`)
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.SessionEncryptionCurrentKeyID != "current" || len(cfg.SessionEncryptionKeys) != 2 || len(cfg.SessionEncryptionKeys["current"]) != 32 {
+		t.Fatalf("loaded encryption key ring = current %q, keys %d", cfg.SessionEncryptionCurrentKeyID, len(cfg.SessionEncryptionKeys))
+	}
+}
+
+func TestProductionRequiresHTTPSAndFixedOIDCCallback(t *testing.T) {
+	setValidRuntimeEnv(t, "production")
+	t.Setenv("APP_ORIGIN", "http://chat.example.test")
+	t.Setenv("OIDC_ISSUER", "https://issuer.example.test")
+	t.Setenv("OIDC_CLIENT_ID", "example-client")
+	t.Setenv("OIDC_CLIENT_SECRET", "example-secret")
+	t.Setenv("OIDC_REDIRECT_URL", "http://chat.example.test/auth/callback")
+	t.Setenv("SESSION_ENCRYPTION_CURRENT_KEY_ID", "current")
+	t.Setenv("SESSION_ENCRYPTION_KEYS", `{"current":"`+base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))+`"}`)
+	if _, err := config.Load(); err == nil {
+		t.Fatal("production configuration loaded with an insecure application origin")
+	}
+
+	t.Setenv("APP_ORIGIN", "https://chat.example.test")
+	t.Setenv("OIDC_REDIRECT_URL", "https://evil.example.test/auth/callback")
+	if _, err := config.Load(); err == nil {
+		t.Fatal("production configuration loaded with a callback on a different origin")
+	}
+}
+
 func TestLocalModeHasDevelopmentCursorSigningKey(t *testing.T) {
 	setValidRuntimeEnv(t, "local")
 	t.Setenv("CURSOR_HMAC_KEY", "")
@@ -79,4 +133,11 @@ func setValidRuntimeEnv(t *testing.T, environment string) {
 	t.Setenv("VALKEY_URL", "redis://localhost:6379/0")
 	t.Setenv("HTTP_ADDR", "127.0.0.1:8080")
 	t.Setenv("CURSOR_HMAC_KEY", "test-room-cursor-signing-key-0123456789")
+	t.Setenv("APP_ORIGIN", "")
+	t.Setenv("OIDC_ISSUER", "")
+	t.Setenv("OIDC_CLIENT_ID", "")
+	t.Setenv("OIDC_CLIENT_SECRET", "")
+	t.Setenv("OIDC_REDIRECT_URL", "")
+	t.Setenv("SESSION_ENCRYPTION_CURRENT_KEY_ID", "")
+	t.Setenv("SESSION_ENCRYPTION_KEYS", "")
 }

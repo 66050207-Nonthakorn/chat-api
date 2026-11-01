@@ -1,7 +1,10 @@
 package config
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -17,12 +20,19 @@ const (
 
 // Config contains runtime values that are safe to log only by field name.
 type Config struct {
-	Environment             Environment
-	DatabaseURL             string
-	ValkeyURL               string
-	HTTPAddr                string
-	EnableLocalTestIdentity bool
-	CursorHMACKey           string
+	Environment                   Environment
+	DatabaseURL                   string
+	ValkeyURL                     string
+	HTTPAddr                      string
+	EnableLocalTestIdentity       bool
+	CursorHMACKey                 string
+	AppOrigin                     string
+	OIDCIssuer                    string
+	OIDCClientID                  string
+	OIDCClientSecret              string
+	OIDCRedirectURL               string
+	SessionEncryptionCurrentKeyID string
+	SessionEncryptionKeys         map[string][]byte
 }
 
 // Load reads process configuration and fails closed for unsupported modes or
@@ -78,10 +88,93 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("VALKEY_URL is required in production")
 		}
 	}
+	if err := loadAuthConfig(&cfg); err != nil {
+		return Config{}, err
+	}
 
 	cfg.HTTPAddr = strings.TrimSpace(os.Getenv("HTTP_ADDR"))
 	if cfg.HTTPAddr == "" {
 		cfg.HTTPAddr = ":8080"
 	}
 	return cfg, nil
+}
+
+func loadAuthConfig(cfg *Config) error {
+	cfg.AppOrigin = strings.TrimSpace(os.Getenv("APP_ORIGIN"))
+	cfg.OIDCIssuer = strings.TrimSpace(os.Getenv("OIDC_ISSUER"))
+	cfg.OIDCClientID = strings.TrimSpace(os.Getenv("OIDC_CLIENT_ID"))
+	cfg.OIDCClientSecret = strings.TrimSpace(os.Getenv("OIDC_CLIENT_SECRET"))
+	cfg.OIDCRedirectURL = strings.TrimSpace(os.Getenv("OIDC_REDIRECT_URL"))
+	cfg.SessionEncryptionCurrentKeyID = strings.TrimSpace(os.Getenv("SESSION_ENCRYPTION_CURRENT_KEY_ID"))
+	encodedKeys := strings.TrimSpace(os.Getenv("SESSION_ENCRYPTION_KEYS"))
+
+	configured := cfg.AppOrigin != "" || cfg.OIDCIssuer != "" || cfg.OIDCClientID != "" || cfg.OIDCClientSecret != "" || cfg.OIDCRedirectURL != "" || cfg.SessionEncryptionCurrentKeyID != "" || encodedKeys != ""
+	if !configured && cfg.Environment == EnvironmentLocal {
+		return nil
+	}
+	if cfg.Environment == EnvironmentProduction || configured {
+		for _, setting := range []struct{ name, value string }{
+			{name: "APP_ORIGIN", value: cfg.AppOrigin},
+			{name: "OIDC_ISSUER", value: cfg.OIDCIssuer},
+			{name: "OIDC_CLIENT_ID", value: cfg.OIDCClientID},
+			{name: "OIDC_CLIENT_SECRET", value: cfg.OIDCClientSecret},
+			{name: "OIDC_REDIRECT_URL", value: cfg.OIDCRedirectURL},
+			{name: "SESSION_ENCRYPTION_CURRENT_KEY_ID", value: cfg.SessionEncryptionCurrentKeyID},
+			{name: "SESSION_ENCRYPTION_KEYS", value: encodedKeys},
+		} {
+			if setting.value == "" {
+				return fmt.Errorf("%s is required when OIDC sessions are enabled", setting.name)
+			}
+		}
+	}
+
+	if cfg.AppOrigin == "" {
+		return nil
+	}
+	origin, err := url.Parse(cfg.AppOrigin)
+	if err != nil || origin.Scheme == "" || origin.Host == "" || origin.User != nil || origin.Path != "" || origin.RawQuery != "" || origin.Fragment != "" || origin.String() != cfg.AppOrigin {
+		return fmt.Errorf("APP_ORIGIN must be an exact origin without a path")
+	}
+	if cfg.Environment == EnvironmentProduction && origin.Scheme != "https" {
+		return fmt.Errorf("APP_ORIGIN must use https in production")
+	}
+	if origin.Scheme != "https" && !(cfg.Environment == EnvironmentLocal && origin.Scheme == "http") {
+		return fmt.Errorf("APP_ORIGIN must use http or https")
+	}
+	issuer, err := url.Parse(cfg.OIDCIssuer)
+	if err != nil || issuer.Scheme == "" || issuer.Host == "" || issuer.User != nil || issuer.RawQuery != "" || issuer.Fragment != "" {
+		return fmt.Errorf("OIDC_ISSUER must be an absolute issuer URL")
+	}
+	if cfg.Environment == EnvironmentProduction && issuer.Scheme != "https" {
+		return fmt.Errorf("OIDC_ISSUER must use https in production")
+	}
+	if issuer.Scheme != "https" && !(cfg.Environment == EnvironmentLocal && issuer.Scheme == "http") {
+		return fmt.Errorf("OIDC_ISSUER must use http or https")
+	}
+	redirect, err := url.Parse(cfg.OIDCRedirectURL)
+	if err != nil || redirect.Scheme == "" || redirect.Host == "" || redirect.User != nil || redirect.RawQuery != "" || redirect.Fragment != "" || redirect.String() != cfg.AppOrigin+"/auth/callback" {
+		return fmt.Errorf("OIDC_REDIRECT_URL must be APP_ORIGIN followed by /auth/callback")
+	}
+	if cfg.Environment == EnvironmentProduction && redirect.Scheme != "https" {
+		return fmt.Errorf("OIDC_REDIRECT_URL must use https in production")
+	}
+	var keyValues map[string]string
+	if err := json.Unmarshal([]byte(encodedKeys), &keyValues); err != nil || len(keyValues) == 0 {
+		return fmt.Errorf("SESSION_ENCRYPTION_KEYS must be a JSON object of key IDs to base64 keys")
+	}
+	cfg.SessionEncryptionKeys = make(map[string][]byte, len(keyValues))
+	for id, encodedKey := range keyValues {
+		if strings.TrimSpace(id) == "" {
+			return fmt.Errorf("SESSION_ENCRYPTION_KEYS contains an empty key ID")
+		}
+		key, err := base64.StdEncoding.DecodeString(encodedKey)
+		if err != nil || len(key) != 32 {
+			return fmt.Errorf("SESSION_ENCRYPTION_KEYS values must be base64-encoded 32-byte keys")
+		}
+		cfg.SessionEncryptionKeys[id] = key
+	}
+	if _, ok := cfg.SessionEncryptionKeys[cfg.SessionEncryptionCurrentKeyID]; !ok {
+		return fmt.Errorf("SESSION_ENCRYPTION_CURRENT_KEY_ID must name a configured encryption key")
+	}
+	return nil
 }

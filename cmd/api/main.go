@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"cloudchat/internal/auth"
 	"cloudchat/internal/config"
 	"cloudchat/internal/db"
 	"cloudchat/internal/httpapi"
@@ -37,6 +38,14 @@ func run() error {
 		return err
 	}
 	defer pool.Close()
+
+	var authServer *auth.Server
+	if cfg.OIDCIssuer != "" {
+		authServer, err = auth.NewServer(ctx, cfg, pool)
+		if err != nil {
+			return err
+		}
+	}
 
 	valkey, err := db.OpenValkey(cfg.ValkeyURL)
 	if err != nil {
@@ -73,7 +82,7 @@ func run() error {
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           httpapi.NewHandlerWithRealtime(cfg, pool, readiness, realtimeServer),
+		Handler:           httpapi.NewHandlerWithAuth(cfg, pool, readiness, realtimeServer, authServer),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}

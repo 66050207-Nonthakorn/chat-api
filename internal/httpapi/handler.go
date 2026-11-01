@@ -23,6 +23,7 @@ type handler struct {
 	config    config.Config
 	pool      *pgxpool.Pool
 	websocket http.Handler
+	auth      *auth.Server
 }
 
 // NewHandler wires the public HTTP API and health endpoints. Authentication
@@ -35,11 +36,25 @@ func NewHandler(cfg config.Config, pool *pgxpool.Pool, readiness health.Readines
 // NewHandlerWithRealtime wires the HTTP API and, when supplied, the local
 // WebSocket subscriber. The WebSocket service owns its own process lifecycle.
 func NewHandlerWithRealtime(cfg config.Config, pool *pgxpool.Pool, readiness health.ReadinessCheck, websocketHandler http.Handler) http.Handler {
-	api := &handler{config: cfg, pool: pool, websocket: websocketHandler}
+	return NewHandlerWithAuth(cfg, pool, readiness, websocketHandler, nil)
+}
+
+// NewHandlerWithAuth wires OIDC login/session endpoints and PostgreSQL-backed
+// authentication when authServer is configured.
+func NewHandlerWithAuth(cfg config.Config, pool *pgxpool.Pool, readiness health.ReadinessCheck, websocketHandler http.Handler, authServer *auth.Server) http.Handler {
+	api := &handler{config: cfg, pool: pool, websocket: websocketHandler, auth: authServer}
 	healthHandler := health.NewHandler(readiness)
 	root := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/health/live" || r.URL.Path == "/health/ready" {
 			healthHandler.ServeHTTP(w, r)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/auth/") || r.URL.Path == "/api/v1/session" {
+			if api.auth == nil {
+				dependencyUnavailable(w, r)
+				return
+			}
+			api.auth.ServeHTTP(w, r)
 			return
 		}
 		if strings.HasPrefix(r.URL.Path, "/api/") {
@@ -48,7 +63,11 @@ func NewHandlerWithRealtime(cfg config.Config, pool *pgxpool.Pool, readiness hea
 		}
 		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "Resource not found", false, nil)
 	})
-	return requestMetadata(auth.LocalTestIdentityMiddleware(cfg, root))
+	var authenticated http.Handler = root
+	if authServer != nil {
+		authenticated = authServer.Middleware(authenticated)
+	}
+	return requestMetadata(auth.LocalTestIdentityMiddleware(cfg, authenticated))
 }
 
 func (h *handler) serveHTTP(w http.ResponseWriter, r *http.Request) {
