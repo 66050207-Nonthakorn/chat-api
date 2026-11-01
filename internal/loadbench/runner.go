@@ -50,7 +50,7 @@ type Report struct {
 	Environment  string          `json:"environment"`
 	Workload     WorkloadReport  `json:"workload"`
 	Acceptance   Summary         `json:"acceptance_latency"`
-	LiveDelivery Summary         `json:"submit_to_first_live_frame_latency"`
+	LiveDelivery Summary         `json:"submit_to_subscribed_client_live_frame_latency"`
 	Traffic      TrafficReport   `json:"traffic"`
 	WebSockets   WebSocketReport `json:"websockets"`
 	Errors       ErrorReport     `json:"errors"`
@@ -76,13 +76,15 @@ type WorkloadReport struct {
 }
 
 type TrafficReport struct {
-	GroupMessages       int `json:"group_messages"`
-	PrivateMessages     int `json:"private_messages"`
-	LiveUniqueMessages  int `json:"live_unique_messages"`
-	LiveMissingMessages int `json:"live_missing_messages"`
-	DuplicateFrames     int `json:"duplicate_frames"`
-	RecoveredBySync     int `json:"recovered_by_sync"`
-	NotFoundBySync      int `json:"not_found_by_sync"`
+	GroupMessages               int `json:"group_messages"`
+	PrivateMessages             int `json:"private_messages"`
+	LiveUniqueMessages          int `json:"live_unique_messages"`
+	LiveMissingMessages         int `json:"live_missing_messages"`
+	LiveClientDeliveries        int `json:"live_client_deliveries"`
+	LiveMissingClientDeliveries int `json:"live_missing_client_deliveries"`
+	DuplicateFrames             int `json:"duplicate_frames"`
+	RecoveredBySync             int `json:"recovered_by_sync"`
+	NotFoundBySync              int `json:"not_found_by_sync"`
 }
 
 type WebSocketReport struct {
@@ -145,9 +147,8 @@ type sendRecord struct {
 	StartedAt       time.Time
 	AcceptedAt      time.Time
 	MessageID       string
-	FirstEventAt    time.Time
-	DeliveryCount   int
 	ByClient        map[int]int
+	FirstDeliveryAt map[int]time.Time
 }
 
 type tracker struct {
@@ -155,6 +156,7 @@ type tracker struct {
 	records            map[string]*sendRecord
 	httpStatuses       map[string]int
 	dialFailureReasons map[string]int
+	expectedClients    map[string][]int
 	acceptance         []time.Duration
 	groupAccepted      int
 	privateAccepted    int
@@ -261,7 +263,7 @@ func Run(ctx context.Context, options RunOptions) (Report, error) {
 
 	benchmarkStart := time.Now()
 	startedAt := benchmarkStart.UTC()
-	tracker := &tracker{records: make(map[string]*sendRecord), httpStatuses: make(map[string]int), dialFailureReasons: make(map[string]int)}
+	tracker := &tracker{records: make(map[string]*sendRecord), httpStatuses: make(map[string]int), dialFailureReasons: make(map[string]int), expectedClients: make(map[string][]int)}
 	client := &http.Client{Timeout: 15 * time.Second}
 	baseline, err := readBaselines(ctx, client, baseURL, cfg)
 	if err != nil {
@@ -281,6 +283,7 @@ func Run(ctx context.Context, options RunOptions) (Report, error) {
 			roomID = cfg.GroupRoomID
 		}
 		clients[index] = &socketClient{id: index, userID: userID, roomID: roomID, baseURL: baseURL, http: client, tracker: tracker, ready: make(chan struct{})}
+		tracker.expectedClients[roomID] = append(tracker.expectedClients[roomID], index)
 		clientWG.Add(1)
 		go func(c *socketClient) {
 			defer clientWG.Done()
@@ -551,14 +554,16 @@ func (t *tracker) messageEvent(clientID int, clientMessageID string) {
 		return
 	}
 	now := time.Now()
-	if record.FirstEventAt.IsZero() {
-		record.FirstEventAt = now
-	}
-	record.DeliveryCount++
 	if record.ByClient == nil {
 		record.ByClient = make(map[int]int)
 	}
 	record.ByClient[clientID]++
+	if record.FirstDeliveryAt == nil {
+		record.FirstDeliveryAt = make(map[int]time.Time)
+	}
+	if _, received := record.FirstDeliveryAt[clientID]; !received {
+		record.FirstDeliveryAt[clientID] = now
+	}
 	if record.ByClient[clientID] > 1 {
 		t.duplicates++
 	}
@@ -745,14 +750,21 @@ func buildReport(start, completed time.Time, elapsed, connectionRamp time.Durati
 			continue
 		}
 		accepted++
-		if !record.FirstEventAt.IsZero() {
-			delivery = append(delivery, record.FirstEventAt.Sub(record.StartedAt))
+		if len(record.FirstDeliveryAt) > 0 {
 			report.Traffic.LiveUniqueMessages++
 		} else {
 			report.Traffic.LiveMissingMessages++
 		}
+		for _, clientID := range tracker.expectedClients[record.RoomID] {
+			if deliveredAt, found := record.FirstDeliveryAt[clientID]; found {
+				delivery = append(delivery, deliveredAt.Sub(record.StartedAt))
+				report.Traffic.LiveClientDeliveries++
+			} else {
+				report.Traffic.LiveMissingClientDeliveries++
+			}
+		}
 		if _, found := synced[record.RoomID][record.MessageID]; found {
-			if record.FirstEventAt.IsZero() {
+			if len(record.FirstDeliveryAt) == 0 {
 				report.Traffic.RecoveredBySync++
 			}
 		} else {
@@ -804,15 +816,24 @@ func applyFaultWindow(report *Report, tracker *tracker, fault faultWindow, synce
 			continue
 		}
 		if !record.StartedAt.Before(fault.StartedAt) && !record.StartedAt.After(fault.EndedAt) {
-			if record.FirstEventAt.IsZero() {
-				missedBeforeOrDuringFault = true
-			} else {
-				duringFault = append(duringFault, record.FirstEventAt)
+			for _, clientID := range tracker.expectedClients[record.RoomID] {
+				if deliveredAt, found := record.FirstDeliveryAt[clientID]; found {
+					if deliveredAt.After(fault.EndedAt) {
+						duringFault = append(duringFault, deliveredAt)
+					}
+				} else {
+					missedBeforeOrDuringFault = true
+				}
 			}
 		}
-		if !record.StartedAt.After(fault.StartedAt) && record.FirstEventAt.IsZero() {
+		if !record.StartedAt.After(fault.EndedAt) {
 			if _, recovered := synced[record.RoomID][record.MessageID]; recovered {
-				missedBeforeOrDuringFault = true
+				for _, clientID := range tracker.expectedClients[record.RoomID] {
+					if _, found := record.FirstDeliveryAt[clientID]; !found {
+						missedBeforeOrDuringFault = true
+						break
+					}
+				}
 			}
 		}
 	}
