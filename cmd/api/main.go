@@ -16,6 +16,7 @@ import (
 	"cloudchat/internal/health"
 	"cloudchat/internal/httpapi"
 	"cloudchat/internal/migrations"
+	"cloudchat/internal/ratelimit"
 	"cloudchat/internal/realtime"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -55,8 +56,12 @@ func run() error {
 		return err
 	}
 	defer func() { _ = valkey.Close() }()
+	rateLimiter, err := ratelimit.New(valkey, string(cfg.Environment))
+	if err != nil {
+		return err
+	}
 
-	realtimeServer, err := realtime.NewServer(context.Background(), pool, valkey, cfg, realtime.Options{Logger: slog.Default()})
+	realtimeServer, err := realtime.NewServer(context.Background(), pool, valkey, cfg, realtime.Options{Logger: slog.Default(), RateLimiter: rateLimiter})
 	if err != nil {
 		return err
 	}
@@ -92,7 +97,7 @@ func run() error {
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           httpapi.NewHandlerWithAuth(cfg, pool, drain.Check, realtimeServer, authServer),
+		Handler:           httpapi.NewHandlerWithAuthAndRateLimiter(cfg, pool, drain.Check, realtimeServer, authServer, rateLimiter),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}

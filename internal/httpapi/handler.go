@@ -18,6 +18,7 @@ import (
 	"cloudchat/internal/auth"
 	"cloudchat/internal/config"
 	"cloudchat/internal/health"
+	"cloudchat/internal/ratelimit"
 	"cloudchat/internal/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -27,6 +28,7 @@ type handler struct {
 	pool      *pgxpool.Pool
 	websocket http.Handler
 	auth      *auth.Server
+	rateLimit *ratelimit.Limiter
 }
 
 // NewHandler wires the public HTTP API and health endpoints. Authentication
@@ -45,7 +47,14 @@ func NewHandlerWithRealtime(cfg config.Config, pool *pgxpool.Pool, readiness hea
 // NewHandlerWithAuth wires OIDC login/session endpoints and PostgreSQL-backed
 // authentication when authServer is configured.
 func NewHandlerWithAuth(cfg config.Config, pool *pgxpool.Pool, readiness health.ReadinessCheck, websocketHandler http.Handler, authServer *auth.Server) http.Handler {
-	api := &handler{config: cfg, pool: pool, websocket: websocketHandler, auth: authServer}
+	return NewHandlerWithAuthAndRateLimiter(cfg, pool, readiness, websocketHandler, authServer, nil)
+}
+
+// NewHandlerWithAuthAndRateLimiter wires the public API with shared Valkey
+// rate limiting. Production API startup must pass the limiter used by its
+// realtime server; constructors without it remain useful for isolated tests.
+func NewHandlerWithAuthAndRateLimiter(cfg config.Config, pool *pgxpool.Pool, readiness health.ReadinessCheck, websocketHandler http.Handler, authServer *auth.Server, limiter *ratelimit.Limiter) http.Handler {
+	api := &handler{config: cfg, pool: pool, websocket: websocketHandler, auth: authServer, rateLimit: limiter}
 	healthHandler := health.NewHandler(readiness)
 	root := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/health/live" || r.URL.Path == "/health/ready" {
@@ -67,6 +76,9 @@ func NewHandlerWithAuth(cfg config.Config, pool *pgxpool.Pool, readiness health.
 		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "Resource not found", false, nil)
 	})
 	var authenticated http.Handler = root
+	if limiter != nil || cfg.Environment != config.EnvironmentLocal {
+		authenticated = api.rateLimitMiddleware(authenticated)
+	}
 	if authServer != nil {
 		authenticated = authServer.Middleware(authenticated)
 	}

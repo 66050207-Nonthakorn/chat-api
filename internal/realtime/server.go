@@ -3,6 +3,8 @@ package realtime
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -18,6 +20,7 @@ import (
 	"cloudchat/internal/auth"
 	"cloudchat/internal/config"
 	"cloudchat/internal/outbox"
+	"cloudchat/internal/ratelimit"
 	"cloudchat/internal/uuid"
 	"github.com/coder/websocket"
 	"github.com/jackc/pgx/v5"
@@ -45,6 +48,7 @@ type Options struct {
 	WriteTimeout           time.Duration
 	SessionRecheckInterval time.Duration
 	Logger                 *slog.Logger
+	RateLimiter            *ratelimit.Limiter
 }
 
 // Server accepts authenticated room subscriptions and fans Valkey events out
@@ -77,6 +81,9 @@ func NewServer(parent context.Context, pool *pgxpool.Pool, valkey redis.Universa
 	}
 	if pool == nil || valkey == nil {
 		return nil, errors.New("WebSocket server requires PostgreSQL and Valkey")
+	}
+	if cfg.Environment != config.EnvironmentLocal && options.RateLimiter == nil {
+		return nil, errors.New("WebSocket server requires a shared rate limiter outside local mode")
 	}
 	options = normalizeOptions(options)
 	logger := options.Logger
@@ -171,6 +178,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		apierror.Write(w, http.StatusServiceUnavailable, "DEPENDENCY_UNAVAILABLE", "The WebSocket service is shutting down", true, nil)
 		return
 	}
+	connectionID := apierror.RequestIDFromContext(r.Context())
+	if connectionID == "" {
+		var raw [16]byte
+		if _, err := rand.Read(raw[:]); err != nil {
+			w.Header().Set("Retry-After", "1")
+			apierror.Write(w, http.StatusServiceUnavailable, "DEPENDENCY_UNAVAILABLE", "A required service is unavailable", true, nil)
+			return
+		}
+		connectionID = hex.EncodeToString(raw[:])
+	}
 	acceptOptions := &websocket.AcceptOptions{Subprotocols: []string{webSocketProtocol}}
 	if s.config.AppOrigin != "" {
 		acceptOptions.OriginPatterns = []string{s.config.AppOrigin}
@@ -191,7 +208,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ctx:       connectionContext,
 		cancel:    cancel,
 		principal: principal,
-		requestID: apierror.RequestIDFromContext(r.Context()),
+		requestID: connectionID,
 		rooms:     make(map[string]struct{}),
 		outbound:  newMessageQueue(s.options.QueueFrames, s.options.QueueBytes),
 	}
@@ -497,10 +514,11 @@ type socket struct {
 	principal auth.Principal
 	requestID string
 
-	mu       sync.Mutex
-	rooms    map[string]struct{}
-	stopOnce sync.Once
-	outbound *messageQueue
+	mu                  sync.Mutex
+	rooms               map[string]struct{}
+	stopOnce            sync.Once
+	outbound            *messageQueue
+	rateLimitViolations int
 }
 
 func (c *socket) readLoop() {
@@ -513,6 +531,13 @@ func (c *socket) readLoop() {
 			}
 			c.stop(status, "")
 			return
+		}
+		process, keepOpen := c.checkCommandRateLimit(payload)
+		if !keepOpen {
+			return
+		}
+		if !process {
+			continue
 		}
 		valid, err := c.server.sessionValid(c.ctx, c.principal)
 		if err != nil {
@@ -527,6 +552,39 @@ func (c *socket) readLoop() {
 			return
 		}
 	}
+}
+
+func (c *socket) checkCommandRateLimit(payload []byte) (process bool, keepOpen bool) {
+	limiter := c.server.options.RateLimiter
+	if limiter == nil {
+		if c.server.config.Environment == config.EnvironmentLocal {
+			return true, true
+		}
+		c.stop(websocket.StatusTryAgainLater, "")
+		return false, false
+	}
+	identity := c.principal.UserID + ":" + c.principal.SessionID + ":" + c.requestID
+	decision, err := limiter.Allow(c.ctx, ratelimit.WebSocketCommand, identity)
+	if err != nil {
+		c.stop(websocket.StatusTryAgainLater, "")
+		return false, false
+	}
+	if decision.Allowed {
+		return true, true
+	}
+	c.rateLimitViolations++
+	if c.rateLimitViolations > 1 {
+		c.stop(websocket.StatusPolicyViolation, "rate limit exceeded")
+		return false, false
+	}
+	var envelope struct {
+		RequestID *string `json:"request_id"`
+	}
+	if err := json.Unmarshal(payload, &envelope); err != nil || envelope.RequestID == nil || !uuid.IsCanonical(*envelope.RequestID) {
+		envelope.RequestID = nil
+	}
+	c.respondErrorAt(envelope.RequestID, "RATE_LIMITED", "WebSocket command rate limit exceeded", true, time.Now())
+	return false, c.ctx.Err() == nil
 }
 
 func (c *socket) handleCommand(messageType websocket.MessageType, payload []byte) bool {

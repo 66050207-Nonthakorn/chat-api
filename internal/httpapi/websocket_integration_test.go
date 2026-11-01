@@ -21,6 +21,7 @@ import (
 	"cloudchat/internal/demo"
 	"cloudchat/internal/httpapi"
 	"cloudchat/internal/outbox"
+	"cloudchat/internal/ratelimit"
 	"cloudchat/internal/realtime"
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
@@ -118,6 +119,19 @@ func TestWebSocketSubscribeAcknowledgesBeforeCrossReplicaDelivery(t *testing.T) 
 	}
 	if len(synced.Items) != 2 || synced.Items[0].MessageID != first.Message.MessageID || synced.Items[1].MessageID != second.Message.MessageID {
 		t.Fatalf("HTTP sync = %+v, want both committed messages in sequence", synced)
+	}
+}
+
+func TestProductionRealtimeServerRequiresSharedRateLimiter(t *testing.T) {
+	env := newRateLimitedWebSocketTestEnv(t, realtime.Options{})
+	productionConfig := config.Config{Environment: config.EnvironmentProduction}
+	server, err := realtime.NewServer(context.Background(), env.pool, env.valkey, productionConfig, realtime.Options{})
+	if err == nil {
+		server.Close()
+		t.Fatal("production realtime server started without a shared rate limiter")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "rate limiter") {
+		t.Fatalf("server error=%q, want missing rate-limiter configuration", err)
 	}
 }
 
@@ -288,14 +302,24 @@ func publishTestMessage(t *testing.T, env *webSocketTestEnv, message messageResp
 }
 
 type webSocketTestEnv struct {
-	test    *testServer
-	pool    *pgxpool.Pool
-	valkey  *redis.Client
-	primary *httptest.Server
-	replica *httptest.Server
+	test                   *testServer
+	pool                   *pgxpool.Pool
+	valkey                 *redis.Client
+	primary                *httptest.Server
+	replica                *httptest.Server
+	primaryRateLimitClient *redis.Client
+	replicaRateLimitClient *redis.Client
 }
 
 func newWebSocketTestEnv(t *testing.T, options realtime.Options) *webSocketTestEnv {
+	return newWebSocketTestEnvWithRateLimit(t, options, false)
+}
+
+func newRateLimitedWebSocketTestEnv(t *testing.T, options realtime.Options) *webSocketTestEnv {
+	return newWebSocketTestEnvWithRateLimit(t, options, true)
+}
+
+func newWebSocketTestEnvWithRateLimit(t *testing.T, options realtime.Options, enabled bool) *webSocketTestEnv {
 	t.Helper()
 	valkeyURL := strings.TrimSpace(os.Getenv("TEST_VALKEY_URL"))
 	if valkeyURL == "" {
@@ -322,24 +346,58 @@ func newWebSocketTestEnv(t *testing.T, options realtime.Options) *webSocketTestE
 		EnableLocalTestIdentity: true,
 		CursorHMACKey:           "test-only-room-cursor-signing-key-0123456789",
 	}
-	primaryHub, err := realtime.NewServer(context.Background(), test.pool, valkey, cfg, options)
+	var primaryRateLimitClient, replicaRateLimitClient *redis.Client
+	var primaryLimiter, replicaLimiter *ratelimit.Limiter
+	if enabled {
+		namespace := fmt.Sprintf("local-test-%d", time.Now().UnixNano())
+		primaryOptions := *redisOptions
+		primaryOptions.ClientName = fmt.Sprintf("chat-rate-test-primary-%d", time.Now().UnixNano())
+		replicaOptions := *redisOptions
+		replicaOptions.ClientName = fmt.Sprintf("chat-rate-test-replica-%d", time.Now().UnixNano())
+		primaryRateLimitClient = redis.NewClient(&primaryOptions)
+		replicaRateLimitClient = redis.NewClient(&replicaOptions)
+		t.Cleanup(func() { _ = primaryRateLimitClient.Close() })
+		t.Cleanup(func() { _ = replicaRateLimitClient.Close() })
+		primaryLimiter, err = ratelimit.New(primaryRateLimitClient, namespace)
+		if err != nil {
+			t.Fatalf("create primary Valkey rate limiter: %v", err)
+		}
+		replicaLimiter, err = ratelimit.New(replicaRateLimitClient, namespace)
+		if err != nil {
+			t.Fatalf("create replica Valkey rate limiter: %v", err)
+		}
+	}
+	primaryServerOptions := options
+	primaryServerOptions.RateLimiter = primaryLimiter
+	replicaServerOptions := options
+	replicaServerOptions.RateLimiter = replicaLimiter
+	primaryHub, err := realtime.NewServer(context.Background(), test.pool, valkey, cfg, primaryServerOptions)
 	if err != nil {
 		t.Fatalf("start primary WebSocket subscriber: %v", err)
 	}
-	replicaHub, err := realtime.NewServer(context.Background(), test.pool, valkey, cfg, options)
+	replicaHub, err := realtime.NewServer(context.Background(), test.pool, valkey, cfg, replicaServerOptions)
 	if err != nil {
 		primaryHub.Close()
 		t.Fatalf("start second WebSocket subscriber: %v", err)
 	}
-	primary := httptest.NewServer(httpapi.NewHandlerWithRealtime(cfg, test.pool, nil, primaryHub))
-	replica := httptest.NewServer(httpapi.NewHandlerWithRealtime(cfg, test.pool, nil, replicaHub))
+	primaryHandler := httpapi.NewHandlerWithRealtime(cfg, test.pool, nil, primaryHub)
+	replicaHandler := httpapi.NewHandlerWithRealtime(cfg, test.pool, nil, replicaHub)
+	if enabled {
+		primaryHandler = httpapi.NewHandlerWithAuthAndRateLimiter(cfg, test.pool, nil, primaryHub, nil, primaryLimiter)
+		replicaHandler = httpapi.NewHandlerWithAuthAndRateLimiter(cfg, test.pool, nil, replicaHub, nil, replicaLimiter)
+	}
+	primary := httptest.NewServer(primaryHandler)
+	replica := httptest.NewServer(replicaHandler)
 	t.Cleanup(func() {
 		primary.Close()
 		replica.Close()
 		primaryHub.Close()
 		replicaHub.Close()
 	})
-	return &webSocketTestEnv{test: test, pool: test.pool, valkey: valkey, primary: primary, replica: replica}
+	return &webSocketTestEnv{
+		test: test, pool: test.pool, valkey: valkey, primary: primary, replica: replica,
+		primaryRateLimitClient: primaryRateLimitClient, replicaRateLimitClient: replicaRateLimitClient,
+	}
 }
 
 func (env *webSocketTestEnv) request(t *testing.T, server *httptest.Server, method, path, userID, body string) (*http.Response, []byte) {
