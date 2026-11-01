@@ -22,7 +22,7 @@ status: accepted
 - **D27 — S3 + CloudFront:** แยกการปล่อย frontend ใช้ origin เดียวผ่านเส้นทาง API/auth/WS ไป ALB ต้องตั้ง cache, cookie และ header ให้ถูกต้อง แทนเสิร์ฟไฟล์จาก Go
 - **D29 — GitHub Actions:** pipeline อยู่กับ repository GitHub ใช้ OIDC รับสิทธิ์ AWS ชั่วคราวแบบจำกัดขอบเขต
 - **D30 — Dev อัตโนมัติ สาธิตเลื่อนด้วยมือ:** deploy พัฒนาเมื่อ environment มีอยู่ ใช้ artifact เดิมที่ผ่านแล้วไปสาธิต ไม่สร้าง environment เพราะ push โค้ด
-- **D31 — ระบบติดตามแบบ managed ของ AWS:** CloudWatch สำหรับ log/metric/dashboard/alarm และ OpenTelemetry สำหรับ trace ที่ส่งไป AWS ต้องจำกัด sampling, retention และจำนวน label
+- **D31 — ระบบติดตามแบบ managed ของ AWS:** CloudWatch สำหรับ log/metric/dashboard/alarm และ OpenTelemetry สำหรับ trace ที่ส่งไป AWS ต้องจำกัด sampling, retention และจำนวน label การส่ง trace ยังเป็นแผน ไม่ใช่พฤติกรรมที่ ticket 07 ส่งมอบ: ขณะนี้ backend มี structured logs และ metrics ผ่าน CloudWatch แต่ยังไม่มี OpenTelemetry SDK/exporter หรือ collector จึงห้ามอ้างว่ามี trace coverage; กำหนด pipeline, sampling, retention และ label ก่อนเริ่มงาน trace แยกต่างหาก
 - **D32 — จำนวน task คงที่ก่อน autoscaling:** วัดก่อนตั้ง policy ที่มีเพดาน แยก API กับ worker เคารพขีดจำกัด connection ฐานข้อมูล และระบาย socket เมื่อ scale-in
 - **D40 — วัดเป็นขั้น:** พื้นฐาน 100 connections / 10 ข้อความต่อวินาที / กลุ่มไม่เกิน 20 คน ทดลองเพิ่มเป็น 1,000 / 100 / 100 ตามลำดับ เป็นเป้าทดสอบ ไม่ใช่ผลสำเร็จหรือ SLA
 - **D41 — Local-first และเปิด AWS เมื่อต้องใช้:** ใช้ช่วง integration ซ้อม และสาธิตแล้วล้างทรัพยากร ระบบต้องรัน local ได้โดยไม่มี AWS

@@ -272,11 +272,17 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 func (s *Server) readEvents() {
 	defer s.readerWait.Done()
+	brokerUnavailable := false
 	for {
 		message, err := s.pubsub.ReceiveMessage(s.ctx)
 		if err != nil {
 			if s.ctx.Err() != nil {
 				return
+			}
+			if !brokerUnavailable {
+				s.logger.Warn("websocket event broker unavailable", "event", "dependency.health", "service", "api",
+					"dependency", "valkey_pubsub", "state", "unavailable", "error_code", "REALTIME_PUBSUB_UNAVAILABLE")
+				brokerUnavailable = true
 			}
 			select {
 			case <-s.ctx.Done():
@@ -284,6 +290,11 @@ func (s *Server) readEvents() {
 			case <-time.After(100 * time.Millisecond):
 				continue
 			}
+		}
+		if brokerUnavailable {
+			s.logger.Info("websocket event broker recovered", "event", "dependency.health", "service", "api",
+				"dependency", "valkey_pubsub", "state", "healthy")
+			brokerUnavailable = false
 		}
 		s.dispatch(message.Payload)
 	}
@@ -519,6 +530,7 @@ func (c *socket) readLoop() {
 }
 
 func (c *socket) handleCommand(messageType websocket.MessageType, payload []byte) bool {
+	startedAt := time.Now()
 	if messageType != websocket.MessageText {
 		c.stop(websocket.StatusPolicyViolation, "text JSON frames required")
 		return false
@@ -536,22 +548,22 @@ func (c *socket) handleCommand(messageType websocket.MessageType, payload []byte
 		return false
 	}
 	if command.RequestID == nil || !uuid.IsCanonical(*command.RequestID) {
-		c.respondError(nil, "INVALID_REQUEST", "Request ID must be a UUID", false)
+		c.respondErrorAt(nil, "INVALID_REQUEST", "Request ID must be a UUID", false, startedAt)
 		return true
 	}
 	switch command.Type {
 	case "subscribe":
 		if !uuid.IsCanonical(command.RoomID) {
-			c.respondError(command.RequestID, "INVALID_REQUEST", "Room ID must be a UUID", false)
+			c.respondErrorAt(command.RequestID, "INVALID_REQUEST", "Room ID must be a UUID", false, startedAt)
 			return true
 		}
-		return c.subscribe(*command.RequestID, command.RoomID)
+		return c.subscribe(*command.RequestID, command.RoomID, startedAt)
 	case "unsubscribe":
 		if !uuid.IsCanonical(command.RoomID) {
-			c.respondError(command.RequestID, "INVALID_REQUEST", "Room ID must be a UUID", false)
+			c.respondErrorAt(command.RequestID, "INVALID_REQUEST", "Room ID must be a UUID", false, startedAt)
 			return true
 		}
-		return c.unsubscribe(*command.RequestID, command.RoomID)
+		return c.unsubscribe(*command.RequestID, command.RoomID, startedAt)
 	case "ping":
 		valid, err := c.server.touchSessionIdle(c.ctx, c.principal)
 		if err != nil {
@@ -562,12 +574,12 @@ func (c *socket) handleCommand(messageType websocket.MessageType, payload []byte
 			c.stop(4401, "")
 			return false
 		}
-		return c.respond(struct {
+		return c.respondAcknowledgement(struct {
 			Type      string `json:"type"`
 			RequestID string `json:"request_id"`
-		}{Type: "pong", RequestID: *command.RequestID}, "", false, false)
+		}{Type: "pong", RequestID: *command.RequestID}, "ping", "queued", startedAt)
 	default:
-		c.respondError(command.RequestID, "INVALID_REQUEST", "Unknown WebSocket command", false)
+		c.respondErrorAt(command.RequestID, "INVALID_REQUEST", "Unknown WebSocket command", false, startedAt)
 		return true
 	}
 }
@@ -602,14 +614,14 @@ func (s *Server) touchSessionIdle(parent context.Context, principal auth.Princip
 	return err == nil, err
 }
 
-func (c *socket) subscribe(requestID, roomID string) bool {
+func (c *socket) subscribe(requestID, roomID string, startedAt time.Time) bool {
 	allowed, err := c.server.hasMembership(c.ctx, roomID, c.principal.UserID)
 	if err != nil {
 		c.stop(websocket.StatusTryAgainLater, "")
 		return false
 	}
 	if !allowed {
-		c.respondError(&requestID, "ROOM_NOT_FOUND", "Room unavailable", false)
+		c.respondErrorAt(&requestID, "ROOM_NOT_FOUND", "Room unavailable", false, startedAt)
 		return true
 	}
 
@@ -621,7 +633,7 @@ func (c *socket) subscribe(requestID, roomID string) bool {
 	_, subscribed := c.rooms[roomID]
 	if !subscribed && len(c.rooms) >= maxSubscriptionsPerSocket {
 		c.mu.Unlock()
-		c.respondError(&requestID, "SUBSCRIPTION_LIMIT", "Too many room subscriptions", false)
+		c.respondErrorAt(&requestID, "SUBSCRIPTION_LIMIT", "Too many room subscriptions", false, startedAt)
 		return true
 	}
 	if !subscribed {
@@ -639,7 +651,7 @@ func (c *socket) subscribe(requestID, roomID string) bool {
 			c.server.removeSubscription(c, roomID)
 		}
 		c.mu.Unlock()
-		c.respondError(&requestID, "ROOM_NOT_FOUND", "Room unavailable", false)
+		c.respondErrorAt(&requestID, "ROOM_NOT_FOUND", "Room unavailable", false, startedAt)
 		return true
 	}
 	if err != nil {
@@ -660,13 +672,15 @@ func (c *socket) subscribe(requestID, roomID string) bool {
 	queued := c.outbound.push(frame)
 	c.mu.Unlock()
 	if !queued {
+		c.logAcknowledgement("subscribe", "failed", startedAt)
 		c.stop(websocket.StatusTryAgainLater, "")
 		return false
 	}
+	c.logAcknowledgement("subscribe", "queued", startedAt)
 	return true
 }
 
-func (c *socket) unsubscribe(requestID, roomID string) bool {
+func (c *socket) unsubscribe(requestID, roomID string, startedAt time.Time) bool {
 	c.mu.Lock()
 	if _, exists := c.rooms[roomID]; exists {
 		delete(c.rooms, roomID)
@@ -681,23 +695,16 @@ func (c *socket) unsubscribe(requestID, roomID string) bool {
 	queued := c.outbound.push(frame)
 	c.mu.Unlock()
 	if !queued {
+		c.logAcknowledgement("unsubscribe", "failed", startedAt)
 		c.stop(websocket.StatusTryAgainLater, "")
 		return false
 	}
+	c.logAcknowledgement("unsubscribe", "queued", startedAt)
 	return true
 }
 
-func (c *socket) respond(value any, roomID string, private, isMessage bool) bool {
-	frame, err := marshalFrame(outboundFrame{roomID: roomID, private: private, message: isMessage, value: value})
-	if err != nil || !c.outbound.push(frame) {
-		c.stop(websocket.StatusTryAgainLater, "")
-		return false
-	}
-	return true
-}
-
-func (c *socket) respondError(requestID *string, code, message string, retryable bool) {
-	c.respond(protocolErrorFrame{
+func (c *socket) respondErrorAt(requestID *string, code, message string, retryable bool, startedAt time.Time) {
+	c.respondAcknowledgement(protocolErrorFrame{
 		Type:      "error",
 		RequestID: requestID,
 		Error: protocolError{
@@ -705,7 +712,24 @@ func (c *socket) respondError(requestID *string, code, message string, retryable
 			Message:   message,
 			Retryable: retryable,
 		},
-	}, "", false, false)
+	}, "error", "error", startedAt)
+}
+
+func (c *socket) respondAcknowledgement(value any, ackType, state string, startedAt time.Time) bool {
+	frame, err := marshalFrame(outboundFrame{value: value})
+	if err != nil || !c.outbound.push(frame) {
+		c.logAcknowledgement(ackType, "failed", startedAt)
+		c.stop(websocket.StatusTryAgainLater, "")
+		return false
+	}
+	c.logAcknowledgement(ackType, state, startedAt)
+	return true
+}
+
+func (c *socket) logAcknowledgement(ackType, state string, startedAt time.Time) {
+	c.server.logger.Info("websocket command acknowledgement enqueued", "event", "socket.ack", "service", "api",
+		"request_id", c.requestID, "ack_type", ackType, "state", state,
+		"enqueue_duration_ms", time.Since(startedAt).Milliseconds())
 }
 
 func (c *socket) deliver(frame outboundFrame) {

@@ -16,6 +16,27 @@ locals {
       value   = "$.duration_ms"
       unit    = "Milliseconds"
     }
+    api_room_sync_latency = {
+      service = "api"
+      metric  = "RoomSyncLatencyMs"
+      pattern = "{ $.event = \"http.request\" && $.route = \"api.room.sync\" && $.duration_ms = * }"
+      value   = "$.duration_ms"
+      unit    = "Milliseconds"
+    }
+    api_room_sync_count = {
+      service = "api"
+      metric  = "RoomSyncRequestCount"
+      pattern = "{ $.event = \"http.request\" && $.route = \"api.room.sync\" }"
+      value   = "1"
+      unit    = "Count"
+    }
+    api_room_sync_failures = {
+      service = "api"
+      metric  = "RoomSyncFailureCount"
+      pattern = "{ $.event = \"http.request\" && $.route = \"api.room.sync\" && $.status >= 500 }"
+      value   = "1"
+      unit    = "Count"
+    }
     api_socket_active = {
       service = "api"
       metric  = "SocketActiveConnections"
@@ -23,10 +44,38 @@ locals {
       value   = "$.active_sockets"
       unit    = "Count"
     }
+    api_socket_ack_latency = {
+      service = "api"
+      metric  = "SocketAcknowledgementQueueLatencyMs"
+      pattern = "{ $.event = \"socket.ack\" && $.state = \"queued\" && $.enqueue_duration_ms = * }"
+      value   = "$.enqueue_duration_ms"
+      unit    = "Milliseconds"
+    }
+    api_socket_ack_rejected = {
+      service = "api"
+      metric  = "SocketAcknowledgementErrorCount"
+      pattern = "{ $.event = \"socket.ack\" && $.state = \"error\" }"
+      value   = "1"
+      unit    = "Count"
+    }
+    api_socket_ack_write_failures = {
+      service = "api"
+      metric  = "SocketAcknowledgementErrorCount"
+      pattern = "{ $.event = \"socket.ack\" && $.state = \"failed\" }"
+      value   = "1"
+      unit    = "Count"
+    }
     api_socket_backpressure = {
       service = "api"
       metric  = "SocketBackpressureCloseCount"
       pattern = "{ $.event = \"socket.connection\" && $.close_code = 1013 }"
+      value   = "1"
+      unit    = "Count"
+    }
+    api_broker_failures = {
+      service = "api"
+      metric  = "BrokerFailureCount"
+      pattern = "{ $.event = \"dependency.health\" && $.dependency = \"valkey_pubsub\" && $.state = \"unavailable\" }"
       value   = "1"
       unit    = "Count"
     }
@@ -89,12 +138,26 @@ locals {
       operator  = "GreaterThanOrEqualToThreshold"
       title     = "API average request latency exceeds 1 second"
     }
+    room_sync_failures = {
+      metric    = "RoomSyncFailureCount"
+      statistic = "Sum"
+      threshold = 1
+      operator  = "GreaterThanOrEqualToThreshold"
+      title     = "Room sync requests fail"
+    }
     api_socket_backpressure = {
       metric    = "SocketBackpressureCloseCount"
       statistic = "Sum"
       threshold = 3
       operator  = "GreaterThanOrEqualToThreshold"
       title     = "WebSocket backpressure closes"
+    }
+    socket_ack_errors = {
+      metric    = "SocketAcknowledgementErrorCount"
+      statistic = "Sum"
+      threshold = 3
+      operator  = "GreaterThanOrEqualToThreshold"
+      title     = "WebSocket acknowledgement errors"
     }
     dependency_failures = {
       metric    = "DependencyFailureCount"
@@ -181,6 +244,20 @@ resource "aws_cloudwatch_metric_alarm" "application" {
   datapoints_to_alarm = 2
   threshold           = each.value.threshold
   comparison_operator = each.value.operator
+  treat_missing_data  = "notBreaching"
+}
+
+resource "aws_cloudwatch_metric_alarm" "broker_failure" {
+  alarm_name          = "${local.name_prefix}-realtime-broker-failure-alarm"
+  alarm_description   = "The API realtime Valkey Pub/Sub connection reported unavailable."
+  namespace           = local.application_metric_namespace
+  metric_name         = "BrokerFailureCount"
+  statistic           = "Sum"
+  period              = 60
+  evaluation_periods  = 1
+  datapoints_to_alarm = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
 }
 
@@ -336,6 +413,25 @@ resource "aws_cloudwatch_dashboard" "backend" {
             metrics = [
               [local.application_metric_namespace, "SocketActiveConnections", { stat = "Maximum", yAxis = "left" }],
               [local.application_metric_namespace, "SocketBackpressureCloseCount", { stat = "Sum", yAxis = "right" }],
+            ]
+          }
+        },
+        {
+          type   = "metric"
+          width  = 12
+          height = 6
+          properties = {
+            title  = "Socket acknowledgements, room sync, and broker"
+            view   = "timeSeries"
+            region = var.aws_region
+            period = 60
+            metrics = [
+              [local.application_metric_namespace, "SocketAcknowledgementQueueLatencyMs", { stat = "Average", yAxis = "left" }],
+              [local.application_metric_namespace, "SocketAcknowledgementErrorCount", { stat = "Sum", yAxis = "right" }],
+              [local.application_metric_namespace, "RoomSyncRequestCount", { stat = "Sum", yAxis = "left" }],
+              [local.application_metric_namespace, "RoomSyncLatencyMs", { stat = "Average", yAxis = "left" }],
+              [local.application_metric_namespace, "RoomSyncFailureCount", { stat = "Sum", yAxis = "right" }],
+              [local.application_metric_namespace, "BrokerFailureCount", { stat = "Sum", yAxis = "right" }],
             ]
           }
         },

@@ -1,15 +1,18 @@
 package httpapi_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -118,6 +121,137 @@ func TestWebSocketSubscribeAcknowledgesBeforeCrossReplicaDelivery(t *testing.T) 
 	}
 }
 
+func TestWebSocketSubscribeAcknowledgementLogsLatencyAndSafeCorrelation(t *testing.T) {
+	logs := &synchronizedLogBuffer{}
+	env := newWebSocketTestEnv(t, realtime.Options{Logger: slog.New(slog.NewJSONHandler(logs, nil))})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client := dialChatSocket(t, ctx, env.replica.URL, demo.UserBID)
+	t.Cleanup(func() { _ = client.Close(websocket.StatusNormalClosure, "") })
+	const clientRequestID = "55555555-5555-4555-8555-555555555555"
+	if err := wsjson.Write(ctx, client, websocketCommand{Type: "subscribe", RequestID: clientRequestID, RoomID: demo.GroupRoomID}); err != nil {
+		t.Fatalf("send subscribe: %v", err)
+	}
+	if ack := readSocketFrame(ctx, client); ack.err != nil || !strings.Contains(string(ack.payload), `"type":"subscribed"`) {
+		t.Fatalf("subscribe acknowledgement = %s err=%v", ack.payload, ack.err)
+	}
+	const rejectedRequestID = "66666666-6666-4666-8666-666666666666"
+	if err := wsjson.Write(ctx, client, websocketCommand{Type: "subscribe", RequestID: rejectedRequestID, RoomID: "invalid-room-id"}); err != nil {
+		t.Fatalf("send rejected subscribe: %v", err)
+	}
+	if rejected := readSocketFrame(ctx, client); rejected.err != nil || !strings.Contains(string(rejected.payload), `"type":"error"`) {
+		t.Fatalf("rejected subscribe acknowledgement = %s err=%v", rejected.payload, rejected.err)
+	}
+
+	foundSent, foundError := false, false
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && (!foundSent || !foundError) {
+		foundSent, foundError = false, false
+		for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+			var event map[string]any
+			if err := json.Unmarshal([]byte(line), &event); err != nil {
+				t.Fatalf("decode WebSocket log %q: %v", line, err)
+			}
+			if event["event"] != "socket.ack" {
+				continue
+			}
+			if _, ok := event["enqueue_duration_ms"].(float64); !ok {
+				t.Fatalf("acknowledgement has no numeric latency: %+v", event)
+			}
+			if event["request_id"] == "" || event["request_id"] == clientRequestID || event["request_id"] == rejectedRequestID || event["room_id"] != nil {
+				t.Fatalf("acknowledgement log has unsafe correlation or room data: %+v", event)
+			}
+			switch {
+			case event["ack_type"] == "subscribe" && event["state"] == "queued":
+				foundSent = true
+			case event["ack_type"] == "error" && event["state"] == "error":
+				foundError = true
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !foundSent || !foundError {
+		t.Fatalf("missing socket acknowledgement metric (sent=%t error=%t): %s", foundSent, foundError, logs.String())
+	}
+}
+
+func TestWebSocketBrokerReconnectLogsUnavailableDependency(t *testing.T) {
+	logs := &synchronizedLogBuffer{}
+	env := newWebSocketTestEnv(t, realtime.Options{Logger: slog.New(slog.NewJSONHandler(logs, nil))})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client := dialChatSocket(t, ctx, env.replica.URL, demo.UserBID)
+	t.Cleanup(func() { _ = client.Close(websocket.StatusNormalClosure, "") })
+	if err := wsjson.Write(ctx, client, websocketCommand{Type: "subscribe", RequestID: "55555555-5555-4555-8555-555555555555", RoomID: demo.GroupRoomID}); err != nil {
+		t.Fatalf("subscribe over public WebSocket: %v", err)
+	}
+	if ack := readSocketFrame(ctx, client); ack.err != nil || !strings.Contains(string(ack.payload), `"type":"subscribed"`) {
+		t.Fatalf("subscribe acknowledgement = %s err=%v", ack.payload, ack.err)
+	}
+
+	clientList, err := env.valkey.Do(ctx, "CLIENT", "LIST").Text()
+	if err != nil {
+		t.Fatalf("list Valkey connections: %v", err)
+	}
+	var pubsubID string
+	for _, line := range strings.Split(clientList, "\n") {
+		var id string
+		isTestClient, isSubscriber := false, false
+		for _, field := range strings.Fields(line) {
+			switch {
+			case strings.HasPrefix(field, "id="):
+				id = strings.TrimPrefix(field, "id=")
+			case field == "name="+env.valkey.Options().ClientName:
+				isTestClient = true
+			case field == "cmd=subscribe":
+				isSubscriber = true
+			}
+		}
+		if isTestClient && isSubscriber {
+			pubsubID = id
+			break
+		}
+	}
+	if pubsubID == "" {
+		t.Fatalf("could not find this test's Pub/Sub connection in CLIENT LIST: %s", clientList)
+	}
+	if killed, err := env.valkey.Do(ctx, "CLIENT", "KILL", "ID", pubsubID).Int(); err != nil || killed != 1 {
+		t.Fatalf("kill only this test's Pub/Sub connection: killed=%d err=%v", killed, err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+			var event map[string]any
+			if err := json.Unmarshal([]byte(line), &event); err != nil {
+				t.Fatalf("decode broker health log %q: %v", line, err)
+			}
+			if event["event"] == "dependency.health" && event["dependency"] == "valkey_pubsub" && event["state"] == "unavailable" {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("Valkey Pub/Sub interruption produced no broker failure event: %s", logs.String())
+}
+
+type synchronizedLogBuffer struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (buffer *synchronizedLogBuffer) Write(value []byte) (int, error) {
+	buffer.mu.Lock()
+	defer buffer.mu.Unlock()
+	return buffer.buffer.Write(value)
+}
+
+func (buffer *synchronizedLogBuffer) String() string {
+	buffer.mu.Lock()
+	defer buffer.mu.Unlock()
+	return buffer.buffer.String()
+}
+
 func assertMessageEvent(t *testing.T, got socketRead, want messageResponse) {
 	t.Helper()
 	var delivered struct {
@@ -172,6 +306,7 @@ func newWebSocketTestEnv(t *testing.T, options realtime.Options) *webSocketTestE
 	if err != nil {
 		t.Fatalf("parse test Valkey URL: %v", err)
 	}
+	redisOptions.ClientName = fmt.Sprintf("chat-ws-test-%d", time.Now().UnixNano())
 	valkey := redis.NewClient(redisOptions)
 	t.Cleanup(func() { _ = valkey.Close() })
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
