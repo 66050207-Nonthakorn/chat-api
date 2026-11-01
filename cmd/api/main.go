@@ -10,10 +10,9 @@ import (
 	"syscall"
 	"time"
 
-	"cloudchat/internal/auth"
 	"cloudchat/internal/config"
 	"cloudchat/internal/db"
-	"cloudchat/internal/health"
+	"cloudchat/internal/httpapi"
 	"cloudchat/internal/migrations"
 )
 
@@ -65,7 +64,7 @@ func run() error {
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           auth.LocalTestIdentityMiddleware(cfg, health.NewHandler(readiness)),
+		Handler:           httpapi.NewHandler(cfg, pool, readiness),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}

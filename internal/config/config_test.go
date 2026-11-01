@@ -50,10 +50,33 @@ func TestUnknownEnvironmentFailsClosed(t *testing.T) {
 	}
 }
 
+func TestProductionRequiresStrongCursorSigningKey(t *testing.T) {
+	setValidRuntimeEnv(t, "production")
+	t.Setenv("CURSOR_HMAC_KEY", "short")
+
+	if _, err := config.Load(); err == nil {
+		t.Fatal("Load succeeded with a short cursor signing key")
+	}
+}
+
+func TestLocalModeHasDevelopmentCursorSigningKey(t *testing.T) {
+	setValidRuntimeEnv(t, "local")
+	t.Setenv("CURSOR_HMAC_KEY", "")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(cfg.CursorHMACKey) < 32 {
+		t.Fatal("local cursor signing key is too short")
+	}
+}
+
 func setValidRuntimeEnv(t *testing.T, environment string) {
 	t.Helper()
 	t.Setenv("APP_ENV", environment)
 	t.Setenv("DATABASE_URL", "postgres://chat:chat@localhost:5432/chat?sslmode=disable")
 	t.Setenv("VALKEY_URL", "redis://localhost:6379/0")
 	t.Setenv("HTTP_ADDR", "127.0.0.1:8080")
+	t.Setenv("CURSOR_HMAC_KEY", "test-room-cursor-signing-key-0123456789")
 }

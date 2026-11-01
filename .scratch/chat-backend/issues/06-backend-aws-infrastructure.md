@@ -7,6 +7,7 @@
 **Status:** ready-for-agent
 
 - [ ] Terraform defines backend ECS/Fargate API and worker services, ECR repositories, RDS PostgreSQL, ElastiCache, task roles, Secrets Manager access, and backend telemetry.
+- [ ] Terraform state uses encrypted remote storage, locking, and restricted access; application cleanup does not destroy the state backend.
 - [ ] Database and cache remain private; task roles grant only required access and credentials load at runtime.
 - [ ] Network, ingress, and frontend resources are consumed as explicit shared inputs rather than duplicated or changed here.
 - [ ] `terraform fmt`, `validate`, and a plan with non-secret example inputs succeed without applying resources.

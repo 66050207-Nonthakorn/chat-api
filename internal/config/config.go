@@ -12,6 +12,7 @@ type Environment string
 const (
 	EnvironmentLocal      Environment = "local"
 	EnvironmentProduction Environment = "production"
+	localCursorHMACKey                = "local-only-room-cursor-signing-key-change-in-production"
 )
 
 // Config contains runtime values that are safe to log only by field name.
@@ -21,6 +22,7 @@ type Config struct {
 	ValkeyURL               string
 	HTTPAddr                string
 	EnableLocalTestIdentity bool
+	CursorHMACKey           string
 }
 
 // Load reads process configuration and fails closed for unsupported modes or
@@ -46,6 +48,17 @@ func Load() (Config, error) {
 	}
 	if cfg.EnableLocalTestIdentity && cfg.Environment != EnvironmentLocal {
 		return Config{}, fmt.Errorf("local test identity is available only when APP_ENV=local")
+	}
+
+	cfg.CursorHMACKey = strings.TrimSpace(os.Getenv("CURSOR_HMAC_KEY"))
+	if cfg.Environment == EnvironmentLocal && cfg.CursorHMACKey == "" {
+		cfg.CursorHMACKey = localCursorHMACKey
+	}
+	if len([]byte(cfg.CursorHMACKey)) < 32 {
+		if cfg.Environment == EnvironmentProduction {
+			return Config{}, fmt.Errorf("CURSOR_HMAC_KEY must contain at least 32 bytes in production")
+		}
+		return Config{}, fmt.Errorf("CURSOR_HMAC_KEY must contain at least 32 bytes")
 	}
 
 	cfg.DatabaseURL = strings.TrimSpace(os.Getenv("DATABASE_URL"))
