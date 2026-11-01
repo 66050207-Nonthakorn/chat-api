@@ -16,7 +16,7 @@
 - [06: Backend AWS infrastructure](issues/06-backend-aws-infrastructure.md) — resolved; non-applying Terraform plan only.
 - [07: Backend release and operations](issues/07-backend-release-and-operations.md) — resolved; local CI/build, controlled migration, bounded drain, and telemetry.
 - [08: Backend load and recovery evidence](issues/08-backend-load-and-recovery-evidence.md) — resolved; local benchmark and failure drills with AWS capacity checks unverified.
-- [09: Shared API and WebSocket rate limits](issues/09-shared-rate-limiting.md) — claimed after the final spec review found this API contract requirement missing.
+- [09: Shared API and WebSocket rate limits](issues/09-shared-rate-limiting.md) — resolved; cross-replica HTTP and WebSocket token buckets use Valkey and fail closed.
 
 ## Fog
 
