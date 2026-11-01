@@ -1,0 +1,32 @@
+# Non-secret, schema-only plan examples. Values are illustrative; this file
+# must never be used for an AWS apply. Confirm region and engine versions first.
+aws_region     = "ap-southeast-1"
+aws_account_id = "123456789012"
+project        = "cloudchat"
+environment    = "dev"
+
+# IDs and target group are syntactically plausible placeholders, not real
+# shared-network resources.
+vpc_id                        = "vpc-0123456789abcdef0"
+private_subnet_ids            = ["subnet-0123456789abcdef0", "subnet-0123456789abcdef1"]
+shared_alb_security_group_id  = "sg-0123456789abcdef0"
+api_target_group_arn          = "arn:aws:elasticloadbalancing:ap-southeast-1:123456789012:targetgroup/cloudchat-dev-api/0123456789abcdef"
+task_egress_ipv4_cidrs         = ["0.0.0.0/0"]
+
+container_image_digests = {
+  api    = "123456789012.dkr.ecr.ap-southeast-1.amazonaws.com/cloudchat-dev-api@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  worker = "123456789012.dkr.ecr.ap-southeast-1.amazonaws.com/cloudchat-dev-worker@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+}
+
+# Enable these only in the non-applying example plan. Real ECS services need
+# existing image digests and populated runtime secrets before deployment.
+enable_ecs_services = true
+offline_validation  = true
+
+# Unapproved development estimates from the cost reference. Confirm each with
+# the selected region, credits, quotas, engine availability, and load profile.
+postgres_engine_version = "17.6"
+postgres_instance_class = "db.t4g.small"
+postgres_final_snapshot_identifier = "cloudchat-dev-final-20261102"
+valkey_engine_version = "8.0"
+valkey_node_type      = "cache.t4g.micro"
