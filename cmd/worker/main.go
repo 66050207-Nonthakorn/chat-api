@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -13,14 +13,15 @@ import (
 )
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 	if err := run(); err != nil {
-		log.Printf("worker stopped: %v", err)
+		slog.Error("worker stopped", "event", "process.stopped", "service", "worker", "error_code", "WORKER_STOPPED")
 		os.Exit(1)
 	}
 }
 
 func run() error {
-	cfg, err := config.Load()
+	cfg, err := config.LoadWorker()
 	if err != nil {
 		return err
 	}
@@ -37,6 +38,8 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	worker := outbox.NewWorker(pool, valkey, cfg.Environment)
+	worker := outbox.NewWorkerWithOptions(pool, valkey, cfg.Environment, outbox.WorkerOptions{
+		ShutdownGrace: cfg.ShutdownGrace,
+	})
 	return worker.Run(ctx)
 }

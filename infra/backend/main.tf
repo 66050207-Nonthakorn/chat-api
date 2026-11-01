@@ -50,7 +50,13 @@ resource "aws_cloudwatch_log_group" "service" {
 }
 
 resource "aws_secretsmanager_secret" "runtime" {
-  for_each = toset(["database_url", "valkey_url", "cursor_hmac_key"])
+  for_each = toset([
+    "database_url",
+    "valkey_url",
+    "cursor_hmac_key",
+    "oidc_client_secret",
+    "session_encryption_keys",
+  ])
 
   name                    = replace("${local.name_prefix}/runtime/${each.key}", "_", "-")
   recovery_window_in_days = var.secret_recovery_window_days
@@ -265,20 +271,25 @@ resource "aws_ecs_task_definition" "service" {
       name        = each.key
       image       = var.container_image_digests[each.key]
       essential   = true
-      stopTimeout = 30
+      stopTimeout = var.shutdown_grace_seconds + 5
       portMappings = each.key == "api" ? [
         {
           containerPort = 8080
           protocol      = "tcp"
         }
       ] : []
-      environment = each.key == "api" ? [
+      environment = concat([
         { name = "APP_ENV", value = "production" },
-        { name = "HTTP_ADDR", value = ":8080" }
-        ] : [
-        { name = "APP_ENV", value = "production" }
-      ]
-      secrets = [
+        { name = "SHUTDOWN_GRACE_SECONDS", value = tostring(var.shutdown_grace_seconds) },
+        ], each.key == "api" ? [
+        { name = "HTTP_ADDR", value = ":8080" },
+        { name = "APP_ORIGIN", value = var.app_origin },
+        { name = "OIDC_ISSUER", value = var.oidc_issuer },
+        { name = "OIDC_CLIENT_ID", value = var.oidc_client_id },
+        { name = "OIDC_REDIRECT_URL", value = var.oidc_redirect_url },
+        { name = "SESSION_ENCRYPTION_CURRENT_KEY_ID", value = var.session_encryption_current_key_id },
+      ] : [])
+      secrets = concat([
         {
           name      = "DATABASE_URL"
           valueFrom = aws_secretsmanager_secret.runtime["database_url"].arn
@@ -287,11 +298,20 @@ resource "aws_ecs_task_definition" "service" {
           name      = "VALKEY_URL"
           valueFrom = aws_secretsmanager_secret.runtime["valkey_url"].arn
         },
+        ], each.key == "api" ? [
         {
           name      = "CURSOR_HMAC_KEY"
           valueFrom = aws_secretsmanager_secret.runtime["cursor_hmac_key"].arn
-        }
-      ]
+        },
+        {
+          name      = "OIDC_CLIENT_SECRET"
+          valueFrom = aws_secretsmanager_secret.runtime["oidc_client_secret"].arn
+        },
+        {
+          name      = "SESSION_ENCRYPTION_KEYS"
+          valueFrom = aws_secretsmanager_secret.runtime["session_encryption_keys"].arn
+        },
+      ] : [])
       logConfiguration = {
         logDriver = "awslogs"
         options = {
@@ -302,6 +322,52 @@ resource "aws_ecs_task_definition" "service" {
       }
     }
   ])
+}
+
+resource "aws_ecs_task_definition" "migration" {
+  count = var.migration_image_digest != "" ? 1 : 0
+
+  family                   = "${local.name_prefix}-migration"
+  cpu                      = var.api_task_cpu
+  memory                   = var.api_task_memory_mib
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  execution_role_arn       = aws_iam_role.execution_migration[0].arn
+  task_role_arn            = aws_iam_role.task["api"].arn
+
+  runtime_platform {
+    operating_system_family = "LINUX"
+    cpu_architecture        = var.task_cpu_architecture
+  }
+
+  container_definitions = jsonencode([
+    {
+      name        = "migrate"
+      image       = var.migration_image_digest
+      command     = ["/app/migrate"]
+      essential   = true
+      stopTimeout = var.shutdown_grace_seconds + 5
+      environment = [
+        { name = "APP_ENV", value = "production" },
+      ]
+      secrets = [
+        {
+          name      = "DATABASE_URL"
+          valueFrom = aws_secretsmanager_secret.runtime["database_url"].arn
+        },
+      ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.service["api"].name
+          "awslogs-region"        = var.aws_region
+          "awslogs-stream-prefix" = "migration"
+        }
+      }
+    }
+  ])
+
+  depends_on = [aws_iam_role_policy.execution_migration]
 }
 
 resource "aws_ecs_service" "service" {
@@ -347,6 +413,17 @@ resource "aws_ecs_service" "service" {
     precondition {
       condition     = !var.enable_ecs_services || (contains(keys(var.container_image_digests), each.key) && can(regex("^.+@sha256:[0-9a-f]{64}$", lookup(var.container_image_digests, each.key, ""))))
       error_message = "ECS services require an existing, immutable repository@sha256 image digest for each service."
+    }
+
+    precondition {
+      condition = !var.enable_ecs_services || (
+        can(regex("^https://[^/]+$", var.app_origin)) &&
+        can(regex("^https://[^/]+/.+$", var.oidc_issuer)) &&
+        trimspace(var.oidc_client_id) != "" &&
+        var.oidc_redirect_url == "${var.app_origin}/auth/callback" &&
+        trimspace(var.session_encryption_current_key_id) != ""
+      )
+      error_message = "ECS services require valid HTTPS APP_ORIGIN/OIDC_ISSUER, OIDC_CLIENT_ID, matching OIDC_REDIRECT_URL, and SESSION_ENCRYPTION_CURRENT_KEY_ID values supplied by the external identity/session owner."
     }
   }
 }

@@ -1,0 +1,72 @@
+name: Backend CI
+
+on:
+  pull_request:
+    branches: [integration, main]
+  push:
+    branches: [integration, main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: chat
+          POSTGRES_USER: chat
+          POSTGRES_PASSWORD: chat
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U chat -d chat"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+      valkey:
+        image: valkey/valkey:8-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    env:
+      TEST_DATABASE_URL: postgres://chat:chat@localhost:5432/chat?sslmode=disable
+      TEST_VALKEY_URL: redis://localhost:6379/0
+    steps:
+      - name: Check out source
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - name: Install Go
+        uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version-file: go.mod
+      - name: Run backend tests
+        run: go test -count=1 ./...
+      - name: Run race tests
+        run: go test -race -count=1 ./...
+      - name: Vet backend
+        run: go vet ./...
+      - name: Build commands
+        run: go build ./cmd/...
+      - name: Build immutable source-labeled images
+        shell: bash
+        run: |
+          set -euo pipefail
+          for service in api worker; do
+            docker build \
+              --build-arg "VCS_REF=${GITHUB_SHA}" \
+              --target "${service}" \
+              --iidfile "${RUNNER_TEMP}/${service}.image-id" \
+              --tag "cloudchat-${service}:${GITHUB_SHA}" \
+              .
+            image_id="$(cat "${RUNNER_TEMP}/${service}.image-id")"
+            revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "cloudchat-${service}:${GITHUB_SHA}")"
+            test "${revision}" = "${GITHUB_SHA}"
+            echo "- ${service}: tested source ${GITHUB_SHA}, local image ${image_id}" >> "${GITHUB_STEP_SUMMARY}"
+          done

@@ -44,7 +44,7 @@ In another shell with the same environment, start the separate worker process:
 go run ./cmd/worker
 ```
 
-The worker entry point currently monitors dependencies and shuts down on Ctrl+C; outbox processing is implemented in the follow-on backend ticket.
+The API, authenticated WebSocket server, and outbox worker are separate processes. The worker claims committed outbox events, publishes through Valkey, and records bounded retries. Readiness fails when dependencies are unhealthy or an API process is draining.
 
 Check process liveness and dependency/schema readiness:
 
@@ -55,16 +55,33 @@ Invoke-RestMethod http://127.0.0.1:8080/health/ready
 
 Both endpoints return only a status value, include a server-generated `X-Request-ID`, and disable caching. Liveness stays healthy while dependencies are unavailable; readiness returns 503 until PostgreSQL has the supported schema and Valkey accepts a subscription.
 
+## Integration checks
+
+Set the test URLs to the local Compose services before running the PostgreSQL/Valkey integration tests:
+
+```powershell
+$env:TEST_DATABASE_URL = "postgres://chat:chat@localhost:5432/chat?sslmode=disable"
+$env:TEST_VALKEY_URL = "redis://localhost:6379/0"
+go test -count=1 ./...
+go test -race -count=1 ./...
+go vet ./...
+go build ./cmd/...
+```
+
+The `infra/backend/build-images.ps1` script builds both backend images from a clean commit and verifies their source revision label and content ID. GitHub Actions runs the same backend checks against service containers; it builds local images but does not push, deploy, or apply AWS infrastructure.
+
 ## Local test identity
 
 The local adapter is opt-in and only runs with `APP_ENV=local`. It recognizes the two seeded demo user IDs through the `X-Local-Test-User-ID` header. Production configuration rejects `ENABLE_LOCAL_TEST_IDENTITY=true`, and the adapter ignores this header outside local mode. Never enable the local identity adapter in AWS.
 
 ## Shutdown
 
-Stop the API and worker with Ctrl+C. Stop local dependencies while preserving the database volume with:
+Stop the API and worker with Ctrl+C. The API marks readiness unavailable, drains HTTP requests, closes WebSockets with a going-away status, and force-closes at the configured grace deadline. The worker stops claiming, finishes or cancels active publishes, and releases any remaining leases so a replacement can continue promptly. Stop local dependencies while preserving the database volume with:
 
 ```powershell
 docker compose down
 ```
 
 This local setup does not use AWS and does not provide production credentials.
+
+For immutable ECR publication, the controlled one-off migration task, compatible schema rollout/rollback, Terraform telemetry, and unverified live-environment checks, see [the backend operations guide](infra/backend/README.md).

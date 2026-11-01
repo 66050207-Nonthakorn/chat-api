@@ -89,10 +89,62 @@ variable "container_image_digests" {
   }
 }
 
+variable "migration_image_digest" {
+  description = "Optional API image digest used by the controlled one-off migration task. Set and apply it separately before changing service image digests."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.migration_image_digest == "" || can(regex("^.+@sha256:[0-9a-f]{64}$", var.migration_image_digest))
+    error_message = "migration_image_digest must be empty or a full repository@sha256 image reference."
+  }
+}
+
 variable "enable_ecs_services" {
   description = "Create ECS task definitions and services after immutable images exist and runtime secrets have values."
   type        = bool
   default     = false
+}
+
+variable "app_origin" {
+  description = "Externally owned browser origin used for OIDC redirects and CSRF checks. Required when ECS services are enabled."
+  type        = string
+  default     = ""
+}
+
+variable "oidc_issuer" {
+  description = "Externally owned OIDC issuer URL. Cognito resources are not managed by this backend module."
+  type        = string
+  default     = ""
+}
+
+variable "oidc_client_id" {
+  description = "OIDC app-client ID supplied by the identity owner."
+  type        = string
+  default     = ""
+}
+
+variable "oidc_redirect_url" {
+  description = "Exact externally registered callback URL; must be APP_ORIGIN/auth/callback."
+  type        = string
+  default     = ""
+}
+
+variable "session_encryption_current_key_id" {
+  description = "Key ID selected from the out-of-band SESSION_ENCRYPTION_KEYS secret."
+  type        = string
+  default     = ""
+}
+
+variable "shutdown_grace_seconds" {
+  description = "Application drain budget in seconds. ECS stopTimeout adds five seconds and stays within its 30-second configured bound."
+  type        = number
+  default     = 20
+
+  validation {
+    condition     = var.shutdown_grace_seconds >= 1 && var.shutdown_grace_seconds <= 25 && floor(var.shutdown_grace_seconds) == var.shutdown_grace_seconds
+    error_message = "shutdown_grace_seconds must be a whole number from 1 through 25."
+  }
 }
 
 variable "offline_validation" {

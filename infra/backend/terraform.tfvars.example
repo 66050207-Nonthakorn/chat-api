@@ -18,6 +18,16 @@ container_image_digests = {
   worker = "123456789012.dkr.ecr.ap-southeast-1.amazonaws.com/cloudchat-dev-worker@sha256:0000000000000000000000000000000000000000000000000000000000000000"
 }
 
+# Cognito is configured by the external identity owner; these example values
+# are deliberately fake and must never be used for an AWS apply.
+app_origin                           = "https://chat.example.invalid"
+oidc_issuer                          = "https://cognito-idp.ap-southeast-1.amazonaws.com/ap-southeast-1_example"
+oidc_client_id                       = "example-client-id"
+oidc_redirect_url                    = "https://chat.example.invalid/auth/callback"
+session_encryption_current_key_id    = "session-key-v1"
+shutdown_grace_seconds               = 20
+migration_image_digest               = ""
+
 # Enable these only in the non-applying example plan. Real ECS services need
 # existing image digests and populated runtime secrets before deployment.
 enable_ecs_services = true

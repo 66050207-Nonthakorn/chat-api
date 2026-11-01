@@ -53,6 +53,51 @@ func TestWebSocketHandshakeRequiresIdentityOriginAndSubprotocol(t *testing.T) {
 	}
 }
 
+func TestWebSocketShutdownClosesClientWithGoingAwayAndRejectsNewConnections(t *testing.T) {
+	env := newWebSocketTestEnv(t, realtime.Options{})
+	cfg := config.Config{
+		Environment:             config.EnvironmentLocal,
+		DatabaseURL:             os.Getenv("TEST_DATABASE_URL"),
+		ValkeyURL:               os.Getenv("TEST_VALKEY_URL"),
+		EnableLocalTestIdentity: true,
+		CursorHMACKey:           "test-only-room-cursor-signing-key-0123456789",
+	}
+	hub, err := realtime.NewServer(context.Background(), env.pool, env.valkey, cfg, realtime.Options{})
+	if err != nil {
+		t.Fatalf("start shutdown-test WebSocket hub: %v", err)
+	}
+	server := httptest.NewServer(httpapi.NewHandlerWithRealtime(cfg, env.pool, nil, hub))
+	t.Cleanup(func() {
+		server.Close()
+		hub.Close()
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client := dialChatSocket(t, ctx, server.URL, demo.UserBID)
+	t.Cleanup(func() { _ = client.Close(websocket.StatusNormalClosure, "") })
+
+	shutdownContext, stopShutdown := context.WithTimeout(context.Background(), 2*time.Second)
+	defer stopShutdown()
+	shutdownDone := make(chan error, 1)
+	go func() { shutdownDone <- hub.Shutdown(shutdownContext) }()
+	_, _, readErr := client.Read(ctx)
+	if got := websocket.CloseStatus(readErr); got != websocket.StatusGoingAway {
+		t.Fatalf("WebSocket close status = %d (error %v), want going-away %d", got, readErr, websocket.StatusGoingAway)
+	}
+	if err := <-shutdownDone; err != nil {
+		t.Fatalf("bounded WebSocket shutdown: %v", err)
+	}
+
+	connection, response, err := dialWebSocket(ctx, server.URL, demo.UserBID, server.URL, []string{"chat.v1"})
+	if connection != nil {
+		_ = connection.Close(websocket.StatusNormalClosure, "")
+		t.Fatal("new WebSocket connected after shutdown")
+	}
+	if err == nil || response == nil || response.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("post-shutdown handshake = response %v, error %v; want HTTP 503", response, err)
+	}
+}
+
 func TestWebSocketMembershipRevocationStopsPrivateDelivery(t *testing.T) {
 	env := newWebSocketTestEnv(t, realtime.Options{})
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

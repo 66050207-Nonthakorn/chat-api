@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Environment string
@@ -33,11 +34,22 @@ type Config struct {
 	OIDCRedirectURL               string
 	SessionEncryptionCurrentKeyID string
 	SessionEncryptionKeys         map[string][]byte
+	ShutdownGrace                 time.Duration
 }
 
-// Load reads process configuration and fails closed for unsupported modes or
-// unsafe local-only features.
+// Load reads API configuration and fails closed when production auth settings
+// or unsafe local-only features are missing.
 func Load() (Config, error) {
+	return load(true)
+}
+
+// LoadWorker reads only the settings needed by the outbox worker. Production
+// identity and cursor secrets are intentionally API-only.
+func LoadWorker() (Config, error) {
+	return load(false)
+}
+
+func load(apiProcess bool) (Config, error) {
 	environment := strings.TrimSpace(os.Getenv("APP_ENV"))
 	if environment == "" {
 		environment = string(EnvironmentProduction)
@@ -59,16 +71,26 @@ func Load() (Config, error) {
 	if cfg.EnableLocalTestIdentity && cfg.Environment != EnvironmentLocal {
 		return Config{}, fmt.Errorf("local test identity is available only when APP_ENV=local")
 	}
-
-	cfg.CursorHMACKey = strings.TrimSpace(os.Getenv("CURSOR_HMAC_KEY"))
-	if cfg.Environment == EnvironmentLocal && cfg.CursorHMACKey == "" {
-		cfg.CursorHMACKey = localCursorHMACKey
-	}
-	if len([]byte(cfg.CursorHMACKey)) < 32 {
-		if cfg.Environment == EnvironmentProduction {
-			return Config{}, fmt.Errorf("CURSOR_HMAC_KEY must contain at least 32 bytes in production")
+	cfg.ShutdownGrace = 20 * time.Second
+	if configuredGrace := strings.TrimSpace(os.Getenv("SHUTDOWN_GRACE_SECONDS")); configuredGrace != "" {
+		seconds, err := strconv.Atoi(configuredGrace)
+		if err != nil || seconds < 1 || seconds > 25 {
+			return Config{}, fmt.Errorf("SHUTDOWN_GRACE_SECONDS must be an integer between 1 and 25")
 		}
-		return Config{}, fmt.Errorf("CURSOR_HMAC_KEY must contain at least 32 bytes")
+		cfg.ShutdownGrace = time.Duration(seconds) * time.Second
+	}
+
+	if apiProcess {
+		cfg.CursorHMACKey = strings.TrimSpace(os.Getenv("CURSOR_HMAC_KEY"))
+		if cfg.Environment == EnvironmentLocal && cfg.CursorHMACKey == "" {
+			cfg.CursorHMACKey = localCursorHMACKey
+		}
+		if len([]byte(cfg.CursorHMACKey)) < 32 {
+			if cfg.Environment == EnvironmentProduction {
+				return Config{}, fmt.Errorf("CURSOR_HMAC_KEY must contain at least 32 bytes in production")
+			}
+			return Config{}, fmt.Errorf("CURSOR_HMAC_KEY must contain at least 32 bytes")
+		}
 	}
 
 	cfg.DatabaseURL = strings.TrimSpace(os.Getenv("DATABASE_URL"))
@@ -88,8 +110,10 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("VALKEY_URL is required in production")
 		}
 	}
-	if err := loadAuthConfig(&cfg); err != nil {
-		return Config{}, err
+	if apiProcess {
+		if err := loadAuthConfig(&cfg); err != nil {
+			return Config{}, err
+		}
 	}
 
 	cfg.HTTPAddr = strings.TrimSpace(os.Getenv("HTTP_ADDR"))

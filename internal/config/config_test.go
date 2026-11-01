@@ -3,9 +3,43 @@ package config_test
 import (
 	"encoding/base64"
 	"testing"
+	"time"
 
 	"cloudchat/internal/config"
 )
+
+func TestShutdownGraceUsesBoundedDefaultAndConfiguredSeconds(t *testing.T) {
+	setValidRuntimeEnv(t, "local")
+	t.Setenv("SHUTDOWN_GRACE_SECONDS", "")
+	defaultConfig, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() with default shutdown grace: %v", err)
+	}
+	if defaultConfig.ShutdownGrace != 20*time.Second {
+		t.Fatalf("default shutdown grace = %s, want 20s", defaultConfig.ShutdownGrace)
+	}
+
+	t.Setenv("SHUTDOWN_GRACE_SECONDS", "12")
+	configured, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() with configured shutdown grace: %v", err)
+	}
+	if configured.ShutdownGrace != 12*time.Second {
+		t.Fatalf("configured shutdown grace = %s, want 12s", configured.ShutdownGrace)
+	}
+}
+
+func TestShutdownGraceRejectsValuesOutsideContainerStopBudget(t *testing.T) {
+	for _, value := range []string{"0", "26", "not-a-number"} {
+		t.Run(value, func(t *testing.T) {
+			setValidRuntimeEnv(t, "local")
+			t.Setenv("SHUTDOWN_GRACE_SECONDS", value)
+			if _, err := config.Load(); err == nil {
+				t.Fatalf("Load() accepted shutdown grace %q", value)
+			}
+		})
+	}
+}
 
 func TestLocalTestIdentityCannotBeEnabledOutsideLocalMode(t *testing.T) {
 	setValidRuntimeEnv(t, "production")
@@ -71,6 +105,33 @@ func TestProductionRequiresOIDCAndSessionEncryptionConfig(t *testing.T) {
 	t.Setenv("SESSION_ENCRYPTION_KEYS", "")
 	if _, err := config.Load(); err == nil {
 		t.Fatal("production configuration loaded without backend-managed OIDC session settings")
+	}
+}
+
+func TestProductionWorkerConfigDoesNotRequireAPIAuthenticationSecrets(t *testing.T) {
+	setValidRuntimeEnv(t, "production")
+	t.Setenv("CURSOR_HMAC_KEY", "")
+	for _, name := range []string{
+		"APP_ORIGIN",
+		"OIDC_ISSUER",
+		"OIDC_CLIENT_ID",
+		"OIDC_CLIENT_SECRET",
+		"OIDC_REDIRECT_URL",
+		"SESSION_ENCRYPTION_CURRENT_KEY_ID",
+		"SESSION_ENCRYPTION_KEYS",
+	} {
+		t.Setenv(name, "")
+	}
+
+	cfg, err := config.LoadWorker()
+	if err != nil {
+		t.Fatalf("LoadWorker() without API-only secrets: %v", err)
+	}
+	if cfg.Environment != config.EnvironmentProduction || cfg.DatabaseURL == "" || cfg.ValkeyURL == "" {
+		t.Fatalf("worker config = %+v, want production with database and Valkey only", cfg)
+	}
+	if cfg.CursorHMACKey != "" || cfg.OIDCClientSecret != "" || len(cfg.SessionEncryptionKeys) != 0 {
+		t.Fatalf("worker config loaded API-only secrets: %+v", cfg)
 	}
 }
 

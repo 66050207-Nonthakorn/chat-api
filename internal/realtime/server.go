@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -43,6 +44,7 @@ type Options struct {
 	ReadLimit              int64
 	WriteTimeout           time.Duration
 	SessionRecheckInterval time.Duration
+	Logger                 *slog.Logger
 }
 
 // Server accepts authenticated room subscriptions and fans Valkey events out
@@ -55,14 +57,16 @@ type Server struct {
 	channel string
 	config  config.Config
 	options Options
+	logger  *slog.Logger
 	pubsub  *redis.PubSub
 
-	mu          sync.RWMutex
-	sockets     map[*socket]struct{}
-	roomSockets map[string]map[*socket]struct{}
-	closed      bool
-	closeOnce   sync.Once
-	readerWait  sync.WaitGroup
+	mu           sync.RWMutex
+	sockets      map[*socket]struct{}
+	roomSockets  map[string]map[*socket]struct{}
+	closed       bool
+	shutdownOnce sync.Once
+	shutdownDone chan struct{}
+	readerWait   sync.WaitGroup
 }
 
 // NewServer subscribes to the environment's Valkey channel before returning,
@@ -75,6 +79,10 @@ func NewServer(parent context.Context, pool *pgxpool.Pool, valkey redis.Universa
 		return nil, errors.New("WebSocket server requires PostgreSQL and Valkey")
 	}
 	options = normalizeOptions(options)
+	logger := options.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
 	ctx, cancel := context.WithCancel(parent)
 	channel := outbox.EventChannel(string(cfg.Environment))
 	pubsub := valkey.Subscribe(ctx, channel)
@@ -86,15 +94,17 @@ func NewServer(parent context.Context, pool *pgxpool.Pool, valkey redis.Universa
 		return nil, errors.New("could not subscribe WebSocket server to Valkey events")
 	}
 	server := &Server{
-		ctx:         ctx,
-		cancel:      cancel,
-		pool:        pool,
-		channel:     channel,
-		config:      cfg,
-		options:     options,
-		pubsub:      pubsub,
-		sockets:     make(map[*socket]struct{}),
-		roomSockets: make(map[string]map[*socket]struct{}),
+		ctx:          ctx,
+		cancel:       cancel,
+		pool:         pool,
+		channel:      channel,
+		config:       cfg,
+		options:      options,
+		logger:       logger,
+		pubsub:       pubsub,
+		sockets:      make(map[*socket]struct{}),
+		roomSockets:  make(map[string]map[*socket]struct{}),
+		shutdownDone: make(chan struct{}),
 	}
 	server.readerWait.Add(1)
 	go server.readEvents()
@@ -181,6 +191,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ctx:       connectionContext,
 		cancel:    cancel,
 		principal: principal,
+		requestID: apierror.RequestIDFromContext(r.Context()),
 		rooms:     make(map[string]struct{}),
 		outbound:  newMessageQueue(s.options.QueueFrames, s.options.QueueBytes),
 	}
@@ -197,7 +208,25 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // Close drains local sockets with 1001 and stops the shared Valkey reader.
 func (s *Server) Close() {
-	s.closeOnce.Do(func() {
+	_ = s.Shutdown(context.Background())
+}
+
+// ReportHealth logs the low-cardinality active socket gauge for dashboards.
+func (s *Server) ReportHealth() {
+	s.mu.RLock()
+	active := len(s.sockets)
+	s.mu.RUnlock()
+	s.logger.Info("websocket connection health", "event", "socket.health", "service", "api", "active_sockets", active)
+}
+
+// Shutdown stops accepting sockets, closes active sockets, and waits for the
+// Valkey reader under the caller's grace period. Expired grace force-closes
+// remaining connections so process exit stays bounded.
+func (s *Server) Shutdown(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.shutdownOnce.Do(func() {
 		s.mu.Lock()
 		s.closed = true
 		clients := make([]*socket, 0, len(s.sockets))
@@ -205,19 +234,40 @@ func (s *Server) Close() {
 			clients = append(clients, client)
 		}
 		s.mu.Unlock()
-		_ = s.pubsub.Close()
-		var stopWait sync.WaitGroup
-		for _, client := range clients {
-			stopWait.Add(1)
-			go func(client *socket) {
-				defer stopWait.Done()
-				client.stop(websocket.StatusGoingAway, "")
-			}(client)
-		}
-		stopWait.Wait()
-		s.cancel()
-		s.readerWait.Wait()
+		go func() {
+			_ = s.pubsub.Close()
+			var stopWait sync.WaitGroup
+			for _, client := range clients {
+				stopWait.Add(1)
+				go func(client *socket) {
+					defer stopWait.Done()
+					client.stop(websocket.StatusGoingAway, "")
+				}(client)
+			}
+			stopWait.Wait()
+			s.cancel()
+			s.readerWait.Wait()
+			close(s.shutdownDone)
+		}()
 	})
+
+	select {
+	case <-s.shutdownDone:
+		return nil
+	case <-ctx.Done():
+		s.mu.RLock()
+		clients := make([]*socket, 0, len(s.sockets))
+		for client := range s.sockets {
+			clients = append(clients, client)
+		}
+		s.mu.RUnlock()
+		for _, client := range clients {
+			_ = client.conn.CloseNow()
+			client.cancel()
+		}
+		s.cancel()
+		return ctx.Err()
+	}
 }
 
 func (s *Server) readEvents() {
@@ -280,11 +330,15 @@ func marshalFrame(frame outboundFrame) (outboundFrame, error) {
 
 func (s *Server) registerSocket(client *socket) bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closed {
+		s.mu.Unlock()
 		return false
 	}
 	s.sockets[client] = struct{}{}
+	active := len(s.sockets)
+	s.mu.Unlock()
+	s.logger.Info("websocket connected", "event", "socket.connection", "service", "api",
+		"request_id", client.requestID, "state", "connected", "active_sockets", active)
 	return true
 }
 
@@ -313,15 +367,21 @@ func (s *Server) removeSubscription(client *socket, roomID string) {
 	}
 }
 
-func (s *Server) removeSocket(client *socket) {
+func (s *Server) removeSocket(client *socket, closeCode websocket.StatusCode) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	_, existed := s.sockets[client]
 	delete(s.sockets, client)
 	for roomID, clients := range s.roomSockets {
 		delete(clients, client)
 		if len(clients) == 0 {
 			delete(s.roomSockets, roomID)
 		}
+	}
+	active := len(s.sockets)
+	s.mu.Unlock()
+	if existed {
+		s.logger.Info("websocket disconnected", "event", "socket.connection", "service", "api",
+			"request_id", client.requestID, "state", "closed", "active_sockets", active, "close_code", int(closeCode))
 	}
 }
 
@@ -424,6 +484,7 @@ type socket struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
 	principal auth.Principal
+	requestID string
 
 	mu       sync.Mutex
 	rooms    map[string]struct{}
@@ -761,7 +822,7 @@ func (c *socket) monitorSession() {
 
 func (c *socket) stop(code websocket.StatusCode, reason string) {
 	c.stopOnce.Do(func() {
-		c.server.removeSocket(c)
+		c.server.removeSocket(c, code)
 		c.outbound.close()
 		closed := make(chan struct{})
 		go func() {

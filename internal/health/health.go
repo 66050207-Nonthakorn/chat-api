@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync/atomic"
@@ -15,6 +16,36 @@ import (
 // It should check only dependencies needed to serve requests, without returning
 // internal errors to the caller.
 type ReadinessCheck func(context.Context) error
+
+// DrainController makes readiness fail before a process stops accepting work.
+// Liveness remains healthy so an orchestrator can drain the task instead of
+// restarting it while its sockets and requests close.
+type DrainController struct {
+	check    ReadinessCheck
+	draining atomic.Bool
+}
+
+// NewDrainController wraps dependency readiness with process drain state.
+func NewDrainController(check ReadinessCheck) *DrainController {
+	return &DrainController{check: check}
+}
+
+// BeginDrain makes subsequent readiness checks fail.
+func (d *DrainController) BeginDrain() {
+	d.draining.Store(true)
+}
+
+// Check reports unavailable when dependencies are unhealthy or the process
+// has begun shutting down.
+func (d *DrainController) Check(ctx context.Context) error {
+	if d == nil || d.draining.Load() {
+		return errors.New("process is draining")
+	}
+	if d.check == nil {
+		return errors.New("readiness check is not configured")
+	}
+	return d.check(ctx)
+}
 
 // NewHandler exposes the public liveness and readiness endpoints.
 func NewHandler(check ReadinessCheck) http.Handler {

@@ -78,6 +78,30 @@ func TestReadyHealthReturnsOKWhenDependenciesAreReady(t *testing.T) {
 	assertRequestID(t, response)
 }
 
+func TestDrainMakesReadinessUnavailableButKeepsLivenessHealthy(t *testing.T) {
+	controller := health.NewDrainController(func(context.Context) error { return nil })
+	handler := health.NewHandler(controller.Check)
+
+	readyBeforeDrain := httptest.NewRecorder()
+	handler.ServeHTTP(readyBeforeDrain, httptest.NewRequest(http.MethodGet, "/health/ready", nil))
+	if readyBeforeDrain.Code != http.StatusOK {
+		t.Fatalf("readiness before drain = %d, want %d", readyBeforeDrain.Code, http.StatusOK)
+	}
+
+	controller.BeginDrain()
+	readyDuringDrain := httptest.NewRecorder()
+	handler.ServeHTTP(readyDuringDrain, httptest.NewRequest(http.MethodGet, "/health/ready", nil))
+	if readyDuringDrain.Code != http.StatusServiceUnavailable {
+		t.Fatalf("readiness during drain = %d, want %d", readyDuringDrain.Code, http.StatusServiceUnavailable)
+	}
+
+	liveDuringDrain := httptest.NewRecorder()
+	handler.ServeHTTP(liveDuringDrain, httptest.NewRequest(http.MethodGet, "/health/live", nil))
+	if liveDuringDrain.Code != http.StatusOK {
+		t.Fatalf("liveness during drain = %d, want %d", liveDuringDrain.Code, http.StatusOK)
+	}
+}
+
 func assertNoStore(t *testing.T, response *httptest.ResponseRecorder) {
 	t.Helper()
 	if got := response.Header().Get("Cache-Control"); got != "no-store" {

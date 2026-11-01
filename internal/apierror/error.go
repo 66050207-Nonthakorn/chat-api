@@ -1,9 +1,24 @@
 package apierror
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 )
+
+type requestIDContextKey struct{}
+
+// WithRequestID carries the server-generated request correlation ID to
+// background work spawned while handling that request.
+func WithRequestID(ctx context.Context, requestID string) context.Context {
+	return context.WithValue(ctx, requestIDContextKey{}, requestID)
+}
+
+// RequestIDFromContext returns the server-generated request correlation ID.
+func RequestIDFromContext(ctx context.Context) string {
+	requestID, _ := ctx.Value(requestIDContextKey{}).(string)
+	return requestID
+}
 
 // Detail describes one field-level validation error in the API contract.
 type Detail struct {

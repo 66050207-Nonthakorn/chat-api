@@ -80,12 +80,72 @@ data "aws_iam_policy_document" "execution" {
       "secretsmanager:DescribeSecret",
       "secretsmanager:GetSecretValue",
     ]
-    resources = [
+    resources = concat([
       aws_secretsmanager_secret.runtime["database_url"].arn,
       aws_secretsmanager_secret.runtime["valkey_url"].arn,
+      ], each.key == "api" ? [
       aws_secretsmanager_secret.runtime["cursor_hmac_key"].arn,
-    ]
+      aws_secretsmanager_secret.runtime["oidc_client_secret"].arn,
+      aws_secretsmanager_secret.runtime["session_encryption_keys"].arn,
+    ] : [])
   }
+}
+
+data "aws_iam_policy_document" "execution_migration" {
+  statement {
+    sid       = "PullOnlyThisServiceImage"
+    effect    = "Allow"
+    actions   = ["ecr:GetAuthorizationToken"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "PullOnlyApiImage"
+    effect = "Allow"
+    actions = [
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:BatchGetImage",
+      "ecr:GetDownloadUrlForLayer",
+    ]
+    resources = [aws_ecr_repository.service["api"].arn]
+  }
+
+  statement {
+    sid    = "WriteOnlyMigrationLogGroup"
+    effect = "Allow"
+    actions = [
+      "logs:CreateLogStream",
+      "logs:DescribeLogStreams",
+      "logs:PutLogEvents",
+    ]
+    resources = ["${aws_cloudwatch_log_group.service["api"].arn}:*"]
+  }
+
+  statement {
+    sid    = "ReadOnlyDatabaseSecret"
+    effect = "Allow"
+    actions = [
+      "secretsmanager:DescribeSecret",
+      "secretsmanager:GetSecretValue",
+    ]
+    resources = [aws_secretsmanager_secret.runtime["database_url"].arn]
+  }
+}
+
+resource "aws_iam_role" "execution_migration" {
+  count = var.migration_image_digest != "" ? 1 : 0
+
+  name                 = "${local.name_prefix}-migration-execution"
+  assume_role_policy   = data.aws_iam_policy_document.ecs_task_trust.json
+  max_session_duration = 3600
+}
+
+resource "aws_iam_role_policy" "execution_migration" {
+  count = var.migration_image_digest != "" ? 1 : 0
+
+  name   = "${local.name_prefix}-migration-execution"
+  role   = aws_iam_role.execution_migration[0].id
+  policy = data.aws_iam_policy_document.execution_migration.json
 }
 
 resource "aws_iam_role_policy" "execution" {

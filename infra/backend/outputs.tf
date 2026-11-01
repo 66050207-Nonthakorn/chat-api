@@ -37,3 +37,8 @@ output "task_execution_role_arns" {
   description = "ECS task execution roles with scoped ECR, log, and runtime-secret permissions."
   value       = { for service, role in aws_iam_role.execution : service => role.arn }
 }
+
+output "migration_task_definition_arn" {
+  description = "One-off migration task definition; run it and verify exit code before updating ECS services."
+  value       = try(aws_ecs_task_definition.migration[0].arn, null)
+}

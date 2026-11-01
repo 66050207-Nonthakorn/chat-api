@@ -24,6 +24,8 @@ const (
 	defaultRetryBaseDelay = time.Second
 	defaultRetryMaxDelay  = 60 * time.Second
 	defaultPollInterval   = 250 * time.Millisecond
+	defaultShutdownGrace  = 5 * time.Second
+	defaultMetricsPeriod  = 30 * time.Second
 	retryAlertAttempt     = 10
 )
 
@@ -37,6 +39,8 @@ type WorkerOptions struct {
 	RetryBaseDelay time.Duration
 	RetryMaxDelay  time.Duration
 	PollInterval   time.Duration
+	ShutdownGrace  time.Duration
+	MetricsPeriod  time.Duration
 	Logger         *slog.Logger
 }
 
@@ -115,6 +119,12 @@ func normalizeOptions(options WorkerOptions) WorkerOptions {
 	if options.PollInterval <= 0 {
 		options.PollInterval = defaultPollInterval
 	}
+	if options.ShutdownGrace <= 0 {
+		options.ShutdownGrace = defaultShutdownGrace
+	}
+	if options.MetricsPeriod <= 0 {
+		options.MetricsPeriod = defaultMetricsPeriod
+	}
 	return options
 }
 
@@ -123,19 +133,27 @@ func normalizeOptions(options WorkerOptions) WorkerOptions {
 func (w *Worker) Run(ctx context.Context) error {
 	ticker := time.NewTicker(w.options.PollInterval)
 	defer ticker.Stop()
-	w.logger.Info("outbox worker started", "channel", w.channel)
+	w.logger.Info("outbox worker started", "event", "worker.started", "service", "worker")
+	lastMetrics := time.Time{}
 	for {
+		if lastMetrics.IsZero() || time.Since(lastMetrics) >= w.options.MetricsPeriod {
+			w.reportBacklog(ctx)
+			lastMetrics = time.Now()
+		}
 		result, err := w.ProcessBatch(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
+				w.logger.Info("outbox worker stopped", "event", "worker.stopped", "service", "worker")
 				return nil
 			}
-			w.logger.Error("outbox batch failed", "error_code", "OUTBOX_BATCH_FAILED")
+			w.logger.Error("outbox batch failed", "event", "dependency.health", "service", "worker",
+				"dependency", "postgres_or_valkey", "state", "unavailable", "error_code", "OUTBOX_BATCH_FAILED")
 		} else if result.Claimed > 0 {
 			continue
 		}
 		select {
 		case <-ctx.Done():
+			w.logger.Info("outbox worker stopped", "event", "worker.stopped", "service", "worker")
 			return nil
 		case <-ticker.C:
 		}
@@ -188,7 +206,48 @@ func (w *Worker) ProcessBatch(ctx context.Context) (BatchResult, error) {
 			err = processed.err
 		}
 	}
+	if ctx.Err() != nil {
+		releaseContext, cancel := context.WithTimeout(context.Background(), w.options.ShutdownGrace)
+		released, releaseErr := w.releaseClaimed(releaseContext, token)
+		cancel()
+		if releaseErr != nil {
+			w.logger.Error("outbox shutdown lease release failed", "event", "dependency.health", "service", "worker",
+				"dependency", "postgres", "state", "unavailable", "error_code", "OUTBOX_SHUTDOWN_RELEASE_FAILED")
+			if err == nil {
+				err = fmt.Errorf("release outbox leases during shutdown: %w", releaseErr)
+			}
+		} else {
+			w.logger.Info("outbox shutdown leases released", "event", "outbox.shutdown", "service", "worker", "released_count", released)
+		}
+	}
 	return result, err
+}
+
+func (w *Worker) releaseClaimed(ctx context.Context, token string) (int64, error) {
+	tag, err := w.pool.Exec(ctx, `
+		UPDATE message_outbox
+		SET available_at = clock_timestamp(), lease_token = NULL, lease_until = NULL
+		WHERE lease_token = $1::uuid AND published_at IS NULL`, token)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
+func (w *Worker) reportBacklog(ctx context.Context) {
+	var pending int64
+	var oldestAge float64
+	if err := w.pool.QueryRow(ctx, `
+		SELECT count(*), COALESCE(EXTRACT(EPOCH FROM (clock_timestamp() - min(created_at))), 0)::float8
+		FROM message_outbox WHERE published_at IS NULL`).Scan(&pending, &oldestAge); err != nil {
+		if ctx.Err() == nil {
+			w.logger.Warn("outbox backlog metric unavailable", "event", "dependency.health", "service", "worker",
+				"dependency", "postgres", "state", "unavailable", "error_code", "OUTBOX_METRIC_QUERY_FAILED")
+		}
+		return
+	}
+	w.logger.Info("outbox backlog health", "event", "outbox.health", "service", "worker",
+		"pending_count", pending, "oldest_age_seconds", oldestAge)
 }
 
 type claimedItem struct {
@@ -374,8 +433,11 @@ func (w *Worker) retryItem(ctx context.Context, item claimedItem, token, errorCo
 		return itemResult{kind: itemLeaseLost}
 	}
 	if item.attempt > retryAlertAttempt {
-		w.logger.Error("outbox retry threshold exceeded", "alert", "OUTBOX_RETRY_THRESHOLD_EXCEEDED",
-			"outbox_id", item.outboxID, "attempt_count", item.attempt, "error_code", errorCode)
+		w.logger.Error("outbox retry threshold exceeded", "event", "outbox.retry", "service", "worker",
+			"alert", "OUTBOX_RETRY_THRESHOLD_EXCEEDED", "attempt_count", item.attempt, "error_code", errorCode)
+	} else {
+		w.logger.Warn("outbox retry scheduled", "event", "outbox.retry", "service", "worker",
+			"attempt_count", item.attempt, "error_code", errorCode)
 	}
 	return itemResult{kind: itemRetried}
 }

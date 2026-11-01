@@ -120,6 +120,55 @@ func TestRecoversAnExpiredLeaseAfterWorkerStopsBeforePublish(t *testing.T) {
 	}
 }
 
+func TestShutdownReleasesClaimedOutboxWorkForAnImmediateReplacementWorker(t *testing.T) {
+	env := newWorkerTestEnv(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	subscriber := env.subscribe(t, ctx, outbox.EventChannel(string(config.EnvironmentLocal)))
+	created := createMessage(t, env.api.Client(), env.api.URL)
+
+	gate := &gatedPublisher{
+		UniversalClient: env.valkey,
+		entered:         make(chan struct{}),
+		release:         make(chan struct{}),
+	}
+	worker := outbox.NewWorkerWithOptions(env.pool, gate, config.EnvironmentLocal, outbox.WorkerOptions{
+		BatchSize:     1,
+		Concurrency:   1,
+		ShutdownGrace: 2 * time.Second,
+	})
+	workerDone := make(chan error, 1)
+	workerCtx, stopWorker := context.WithCancel(ctx)
+	go func() { workerDone <- worker.Run(workerCtx) }()
+
+	select {
+	case <-gate.entered:
+	case <-ctx.Done():
+		t.Fatal("worker did not begin publishing the committed outbox event")
+	}
+	stopWorker()
+	select {
+	case err := <-workerDone:
+		if err != nil {
+			t.Fatalf("graceful worker shutdown: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("worker did not finish within its shutdown grace")
+	}
+
+	replacement := outbox.NewWorkerWithOptions(env.pool, env.valkey, config.EnvironmentLocal, outbox.WorkerOptions{
+		BatchSize: 1,
+	})
+	result, err := replacement.ProcessBatch(ctx)
+	if err != nil {
+		t.Fatalf("replacement worker process released event: %v", err)
+	}
+	if result.Claimed != 1 || result.Published != 1 {
+		t.Fatalf("replacement worker result = %+v, want one immediate publish", result)
+	}
+	assertEventMatchesMessage(t, receiveEvent(t, subscriber), created.Message)
+}
+
 func TestStalePublisherCannotFinishAfterAReplacementOwnsTheLease(t *testing.T) {
 	env := newWorkerTestEnv(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
