@@ -14,7 +14,7 @@ Implement the server-side portion of the Cloud Computing chat design. The existi
 ## Scope
 
 - Go API, migration and seed tooling, PostgreSQL persistence, local-only test identity, outbox worker, Valkey Pub/Sub, WebSocket server, and Cognito-backed sessions.
-- Backend-owned AWS resources and backend release, health, recovery, and measurement tooling.
+- Protected Terraform state plus backend-owned AWS resources and backend release, health, recovery, and measurement tooling.
 - Use public HTTP, worker/PubSub, WebSocket, auth, and Terraform plan seams approved in this chat for TDD.
 
 ## Out of scope
