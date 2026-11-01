@@ -6,10 +6,10 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"cloudchat/internal/config"
 	"cloudchat/internal/db"
+	"cloudchat/internal/outbox"
 )
 
 func main() {
@@ -37,24 +37,6 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	ticker := time.NewTicker(15 * time.Second)
-	defer ticker.Stop()
-	log.Print("worker process started")
-
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-ticker.C:
-			checkContext, cancel := context.WithTimeout(ctx, 2*time.Second)
-			postgresErr := pool.Ping(checkContext)
-			valkeyErr := valkey.Ping(checkContext).Err()
-			cancel()
-			if postgresErr != nil || valkeyErr != nil {
-				log.Print("worker dependency check failed")
-				continue
-			}
-			log.Print("worker heartbeat: dependencies ready")
-		}
-	}
+	worker := outbox.NewWorker(pool, valkey, cfg.Environment)
+	return worker.Run(ctx)
 }
