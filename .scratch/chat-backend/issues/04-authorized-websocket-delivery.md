@@ -4,11 +4,17 @@
 
 **Blocked by:** 03: Publish outbox events with recoverable leases.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] The endpoint negotiates `chat.v1`, checks session and Origin before upgrade, and implements subscribe, unsubscribe, and ping/pong frames.
-- [ ] Subscription authorization is checked against current PostgreSQL membership; acknowledgement is queued before subsequent room events.
-- [ ] Pub/Sub events fan out across API replicas; duplicate, missing, and out-of-order notifications do not change durable HTTP history.
-- [ ] Session and membership are rechecked before private sends; access revocation or unavailable authorization stops further delivery.
-- [ ] Per-socket subscriptions and outbound queues are bounded; full queues close with the specified recovery code.
-- [ ] WebSocket protocol tests use real clients and verify cross-replica delivery, authorization, reconnect, and recovery via HTTP sync.
+- [x] The endpoint negotiates `chat.v1`, checks session and Origin before upgrade, and implements subscribe, unsubscribe, and ping/pong frames.
+- [x] Subscription authorization is checked against current PostgreSQL membership; acknowledgement is queued before subsequent room events.
+- [x] Pub/Sub events fan out across API replicas; duplicate, missing, and out-of-order notifications do not change durable HTTP history.
+- [x] Session and membership are rechecked before private sends; access revocation or unavailable authorization stops further delivery.
+- [x] Per-socket subscriptions and outbound queues are bounded; full queues close with the specified recovery code.
+- [x] WebSocket protocol tests use real clients and verify cross-replica delivery, authorization, reconnect, and recovery via HTTP sync.
+
+## Resolution
+
+Implemented in `9e254a4` and `48ced56`, then merged into `integration` at `48ced56`.
+
+Verification: public-client integration tests, uncached `go test -count=1 ./...`, `go vet ./...`, `go build ./cmd/...`, and focused race tests passed against PostgreSQL/Valkey Compose services. Coverage includes handshake identity/Origin/subprotocol, authorization and revocation, fanout, missed-event recovery, ping/unsubscribe, subscription cap, queue overload, and oversized frames. Shared ticket03 services remain healthy.
