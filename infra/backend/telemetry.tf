@@ -79,6 +79,13 @@ locals {
       value   = "1"
       unit    = "Count"
     }
+    worker_broker_publish_failures = {
+      service = "worker"
+      metric  = "BrokerFailureCount"
+      pattern = "{ $.event = \"outbox.retry\" && $.error_code = \"VALKEY_PUBLISH_FAILED\" }"
+      value   = "1"
+      unit    = "Count"
+    }
     api_database_pool = {
       service = "api"
       metric  = "DatabasePoolInUsePercent"

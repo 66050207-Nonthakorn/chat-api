@@ -1,12 +1,14 @@
 package outbox_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -259,10 +261,12 @@ func TestRetryAfterLostPublishAcknowledgementCanDuplicateTheEvent(t *testing.T) 
 	defer cancel()
 	subscriber := env.subscribe(t, ctx, outbox.EventChannel(string(config.EnvironmentLocal)))
 	created := createMessage(t, env.api.Client(), env.api.URL)
+	var captured bytes.Buffer
 
 	worker := outbox.NewWorkerWithOptions(env.pool, &dropFirstPublishAck{UniversalClient: env.valkey}, config.EnvironmentLocal, outbox.WorkerOptions{
 		RetryBaseDelay: 20 * time.Millisecond,
 		RetryMaxDelay:  100 * time.Millisecond,
+		Logger:         slog.New(slog.NewJSONHandler(&captured, nil)),
 	})
 	first, err := worker.ProcessBatch(ctx)
 	if err != nil {
@@ -270,6 +274,20 @@ func TestRetryAfterLostPublishAcknowledgementCanDuplicateTheEvent(t *testing.T) 
 	}
 	if first.RetryScheduled != 1 || first.Published != 0 {
 		t.Fatalf("ambiguous publish result = %+v, want retry scheduled", first)
+	}
+	var brokerFailureLogged bool
+	for _, line := range strings.Split(strings.TrimSpace(captured.String()), "\n") {
+		var event map[string]any
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("decode outbox retry log %q: %v", line, err)
+		}
+		if event["event"] == "outbox.retry" && event["error_code"] == "VALKEY_PUBLISH_FAILED" {
+			brokerFailureLogged = true
+			break
+		}
+	}
+	if !brokerFailureLogged {
+		t.Fatalf("Valkey publish failure was not observable for broker telemetry: %s", captured.String())
 	}
 	assertEventMatchesMessage(t, receiveEvent(t, subscriber), created.Message)
 
