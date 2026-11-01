@@ -18,15 +18,22 @@ import (
 )
 
 type handler struct {
-	config config.Config
-	pool   *pgxpool.Pool
+	config    config.Config
+	pool      *pgxpool.Pool
+	websocket http.Handler
 }
 
 // NewHandler wires the public HTTP API and health endpoints. Authentication
 // is supplied by the configured identity middleware; production session auth
 // is added by the session implementation.
 func NewHandler(cfg config.Config, pool *pgxpool.Pool, readiness health.ReadinessCheck) http.Handler {
-	api := &handler{config: cfg, pool: pool}
+	return NewHandlerWithRealtime(cfg, pool, readiness, nil)
+}
+
+// NewHandlerWithRealtime wires the HTTP API and, when supplied, the local
+// WebSocket subscriber. The WebSocket service owns its own process lifecycle.
+func NewHandlerWithRealtime(cfg config.Config, pool *pgxpool.Pool, readiness health.ReadinessCheck, websocketHandler http.Handler) http.Handler {
+	api := &handler{config: cfg, pool: pool, websocket: websocketHandler}
 	healthHandler := health.NewHandler(readiness)
 	root := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/health/live" || r.URL.Path == "/health/ready" {
@@ -43,6 +50,18 @@ func NewHandler(cfg config.Config, pool *pgxpool.Pool, readiness health.Readines
 }
 
 func (h *handler) serveHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/api/v1/ws" {
+		if r.Method != http.MethodGet {
+			writeError(w, r, http.StatusMethodNotAllowed, "INVALID_REQUEST", "Method not allowed", false, nil)
+			return
+		}
+		if h.websocket == nil {
+			dependencyUnavailable(w, r)
+			return
+		}
+		h.websocket.ServeHTTP(w, r)
+		return
+	}
 	if r.URL.Path == "/api/v1/rooms" {
 		if r.Method != http.MethodGet {
 			writeError(w, r, http.StatusMethodNotAllowed, "INVALID_REQUEST", "Method not allowed", false, nil)

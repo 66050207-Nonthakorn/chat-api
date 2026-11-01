@@ -14,6 +14,7 @@ import (
 	"cloudchat/internal/db"
 	"cloudchat/internal/httpapi"
 	"cloudchat/internal/migrations"
+	"cloudchat/internal/realtime"
 )
 
 func main() {
@@ -28,6 +29,8 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	pool, err := db.OpenPostgres(context.Background(), cfg.DatabaseURL)
 	if err != nil {
@@ -40,6 +43,12 @@ func run() error {
 		return err
 	}
 	defer func() { _ = valkey.Close() }()
+
+	realtimeServer, err := realtime.NewServer(ctx, pool, valkey, cfg, realtime.Options{})
+	if err != nil {
+		return err
+	}
+	defer realtimeServer.Close()
 
 	readiness := func(parent context.Context) error {
 		ctx, cancel := context.WithTimeout(parent, 2*time.Second)
@@ -64,13 +73,11 @@ func run() error {
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           httpapi.NewHandler(cfg, pool, readiness),
+		Handler:           httpapi.NewHandlerWithRealtime(cfg, pool, readiness, realtimeServer),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	serverErrors := make(chan error, 1)
 	go func() {
 		err := server.ListenAndServe()
@@ -85,6 +92,7 @@ func run() error {
 	case err := <-serverErrors:
 		return err
 	case <-ctx.Done():
+		realtimeServer.Close()
 		shutdownContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		return server.Shutdown(shutdownContext)
