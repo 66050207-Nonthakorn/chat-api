@@ -1,0 +1,83 @@
+name: chat-ticket08-benchmark
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: chat
+      POSTGRES_USER: chat
+      POSTGRES_PASSWORD: chat
+    ports:
+      - "127.0.0.1:15432:5432"
+    volumes:
+      - benchmark-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chat -d chat"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  valkey:
+    image: valkey/valkey:8-alpine
+    ports:
+      - "127.0.0.1:16379:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  migrate:
+    image: cloudchat-ticket08-migrate:local
+    build:
+      context: ../../..
+      dockerfile: Dockerfile
+      target: migrate
+    environment:
+      DATABASE_URL: postgres://chat:chat@postgres:5432/chat?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["/app/migrate"]
+
+  api:
+    image: cloudchat-ticket08-api:local
+    build:
+      context: ../../..
+      dockerfile: Dockerfile
+      target: api
+    environment:
+      APP_ENV: local
+      ENABLE_LOCAL_TEST_IDENTITY: "true"
+      DATABASE_URL: postgres://chat:chat@postgres:5432/chat?sslmode=disable
+      VALKEY_URL: redis://valkey:6379/0
+      HTTP_ADDR: :8080
+      SHUTDOWN_GRACE_SECONDS: "5"
+    ports:
+      - "127.0.0.1:18080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+
+  worker:
+    image: cloudchat-ticket08-worker:local
+    build:
+      context: ../../..
+      dockerfile: Dockerfile
+      target: worker
+    environment:
+      APP_ENV: local
+      DATABASE_URL: postgres://chat:chat@postgres:5432/chat?sslmode=disable
+      VALKEY_URL: redis://valkey:6379/0
+      SHUTDOWN_GRACE_SECONDS: "5"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+
+volumes:
+  benchmark-postgres-data:
+    name: chat-ticket08-benchmark-postgres-data

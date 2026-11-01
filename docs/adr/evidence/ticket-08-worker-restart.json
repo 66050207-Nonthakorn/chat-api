@@ -1,0 +1,343 @@
+{
+  "started_at": "2026-11-01T19:34:07.4328512Z",
+  "completed_at": "2026-11-01T19:34:40.5174543Z",
+  "environment": "local isolated Docker Compose; public HTTP/WebSocket clients; PostgreSQL and Valkey",
+  "workload": {
+    "target_connections": 100,
+    "target_messages_per_second": 10,
+    "configured_duration": "30s",
+    "connection_ramp": "48.7036ms",
+    "payload_bytes": 256,
+    "traffic_mix": "50% group / 50% private",
+    "group_room_size": 2,
+    "private_room_size": 2,
+    "observed_connections": 100,
+    "accepted_messages": 300,
+    "accepted_messages_per_second": 9.999828202951473,
+    "attempted_messages": 300,
+    "elapsed": "30.0005154s"
+  },
+  "acceptance_latency": {
+    "count": 300,
+    "p50_ms": 3.7929,
+    "p95_ms": 6.1227,
+    "p99_ms": 12.3927,
+    "max_ms": 33.6465
+  },
+  "submit_to_first_live_frame_latency": {
+    "count": 300,
+    "p50_ms": 177.2137,
+    "p95_ms": 4961.6546,
+    "p99_ms": 6190.2485,
+    "max_ms": 6471.6864
+  },
+  "traffic": {
+    "group_messages": 150,
+    "private_messages": 150,
+    "live_unique_messages": 300,
+    "live_missing_messages": 0,
+    "duplicate_frames": 0,
+    "recovered_by_sync": 0,
+    "not_found_by_sync": 0
+  },
+  "websockets": {
+    "subscribe_acks": 100,
+    "disconnects": 0,
+    "reconnects": 0,
+    "dial_failures": 0,
+    "dial_failure_reasons": {},
+    "read_failures": 0
+  },
+  "errors": {
+    "http_status_counts": {},
+    "sync_errors": 0,
+    "docker_probe_errors": 0
+  },
+  "recovery": {
+    "fault_service": "worker",
+    "fault_started_at": "2026-11-01T19:34:16.1471699Z",
+    "fault_ended_at": "2026-11-01T19:34:24.224123Z",
+    "outbox_pending_peak": 50,
+    "outbox_pending_final": 0,
+    "outbox_oldest_age_peak_seconds": 4.928669,
+    "outbox_recovery_seconds": 11.7773327,
+    "delivery_recovery_seconds": 0.0346982
+  },
+  "resources": {
+    "sampling_interval": "requested 1s; observed average 3.2s",
+    "samples": [
+      {
+        "at": "2026-11-01T19:34:07.4815548Z",
+        "container": "chat-ticket08-benchmark-api-1",
+        "cpu_percent": "10.73%",
+        "memory": "19.52MiB / 7.631GiB",
+        "memory_percent": "0.25%"
+      },
+      {
+        "at": "2026-11-01T19:34:07.4815548Z",
+        "container": "chat-ticket08-benchmark-postgres-1",
+        "cpu_percent": "13.90%",
+        "memory": "83.41MiB / 7.631GiB",
+        "memory_percent": "1.07%"
+      },
+      {
+        "at": "2026-11-01T19:34:07.4815548Z",
+        "container": "chat-ticket08-benchmark-valkey-1",
+        "cpu_percent": "2.36%",
+        "memory": "5.133MiB / 7.631GiB",
+        "memory_percent": "0.07%"
+      },
+      {
+        "at": "2026-11-01T19:34:07.4815548Z",
+        "container": "chat-ticket08-benchmark-worker-1",
+        "cpu_percent": "0.80%",
+        "memory": "9.84MiB / 7.631GiB",
+        "memory_percent": "0.13%"
+      },
+      {
+        "at": "2026-11-01T19:34:11.5578565Z",
+        "container": "chat-ticket08-benchmark-api-1",
+        "cpu_percent": "9.66%",
+        "memory": "19.52MiB / 7.631GiB",
+        "memory_percent": "0.25%"
+      },
+      {
+        "at": "2026-11-01T19:34:11.5578565Z",
+        "container": "chat-ticket08-benchmark-postgres-1",
+        "cpu_percent": "13.20%",
+        "memory": "83.13MiB / 7.631GiB",
+        "memory_percent": "1.06%"
+      },
+      {
+        "at": "2026-11-01T19:34:11.5578565Z",
+        "container": "chat-ticket08-benchmark-valkey-1",
+        "cpu_percent": "2.13%",
+        "memory": "5.031MiB / 7.631GiB",
+        "memory_percent": "0.06%"
+      },
+      {
+        "at": "2026-11-01T19:34:11.5578565Z",
+        "container": "chat-ticket08-benchmark-worker-1",
+        "cpu_percent": "0.75%",
+        "memory": "9.453MiB / 7.631GiB",
+        "memory_percent": "0.12%"
+      },
+      {
+        "at": "2026-11-01T19:34:14.6173986Z",
+        "container": "chat-ticket08-benchmark-api-1",
+        "cpu_percent": "1.27%",
+        "memory": "18.53MiB / 7.631GiB",
+        "memory_percent": "0.24%"
+      },
+      {
+        "at": "2026-11-01T19:34:14.6173986Z",
+        "container": "chat-ticket08-benchmark-postgres-1",
+        "cpu_percent": "1.28%",
+        "memory": "71.56MiB / 7.631GiB",
+        "memory_percent": "0.92%"
+      },
+      {
+        "at": "2026-11-01T19:34:14.6173986Z",
+        "container": "chat-ticket08-benchmark-valkey-1",
+        "cpu_percent": "0.11%",
+        "memory": "4.289MiB / 7.631GiB",
+        "memory_percent": "0.05%"
+      },
+      {
+        "at": "2026-11-01T19:34:14.6173986Z",
+        "container": "chat-ticket08-benchmark-worker-1",
+        "cpu_percent": "0.00%",
+        "memory": "0B / 0B",
+        "memory_percent": "0.00%"
+      },
+      {
+        "at": "2026-11-01T19:34:17.6996714Z",
+        "container": "chat-ticket08-benchmark-api-1",
+        "cpu_percent": "1.24%",
+        "memory": "19.27MiB / 7.631GiB",
+        "memory_percent": "0.25%"
+      },
+      {
+        "at": "2026-11-01T19:34:17.6996714Z",
+        "container": "chat-ticket08-benchmark-postgres-1",
+        "cpu_percent": "3.62%",
+        "memory": "72.22MiB / 7.631GiB",
+        "memory_percent": "0.92%"
+      },
+      {
+        "at": "2026-11-01T19:34:17.6996714Z",
+        "container": "chat-ticket08-benchmark-valkey-1",
+        "cpu_percent": "2.36%",
+        "memory": "5.023MiB / 7.631GiB",
+        "memory_percent": "0.06%"
+      },
+      {
+        "at": "2026-11-01T19:34:20.7256502Z",
+        "container": "chat-ticket08-benchmark-api-1",
+        "cpu_percent": "24.43%",
+        "memory": "19.7MiB / 7.631GiB",
+        "memory_percent": "0.25%"
+      },
+      {
+        "at": "2026-11-01T19:34:20.7256502Z",
+        "container": "chat-ticket08-benchmark-postgres-1",
+        "cpu_percent": "29.08%",
+        "memory": "83.37MiB / 7.631GiB",
+        "memory_percent": "1.07%"
+      },
+      {
+        "at": "2026-11-01T19:34:20.7256502Z",
+        "container": "chat-ticket08-benchmark-valkey-1",
+        "cpu_percent": "3.25%",
+        "memory": "5.367MiB / 7.631GiB",
+        "memory_percent": "0.07%"
+      },
+      {
+        "at": "2026-11-01T19:34:23.778348Z",
+        "container": "chat-ticket08-benchmark-api-1",
+        "cpu_percent": "10.37%",
+        "memory": "20.07MiB / 7.631GiB",
+        "memory_percent": "0.26%"
+      },
+      {
+        "at": "2026-11-01T19:34:23.778348Z",
+        "container": "chat-ticket08-benchmark-postgres-1",
+        "cpu_percent": "10.73%",
+        "memory": "83.33MiB / 7.631GiB",
+        "memory_percent": "1.07%"
+      },
+      {
+        "at": "2026-11-01T19:34:23.778348Z",
+        "container": "chat-ticket08-benchmark-valkey-1",
+        "cpu_percent": "2.24%",
+        "memory": "5.293MiB / 7.631GiB",
+        "memory_percent": "0.07%"
+      },
+      {
+        "at": "2026-11-01T19:34:23.778348Z",
+        "container": "chat-ticket08-benchmark-worker-1",
+        "cpu_percent": "0.84%",
+        "memory": "7.477MiB / 7.631GiB",
+        "memory_percent": "0.10%"
+      },
+      {
+        "at": "2026-11-01T19:34:26.830462Z",
+        "container": "chat-ticket08-benchmark-api-1",
+        "cpu_percent": "9.94%",
+        "memory": "20.07MiB / 7.631GiB",
+        "memory_percent": "0.26%"
+      },
+      {
+        "at": "2026-11-01T19:34:26.830462Z",
+        "container": "chat-ticket08-benchmark-postgres-1",
+        "cpu_percent": "9.99%",
+        "memory": "83.41MiB / 7.631GiB",
+        "memory_percent": "1.07%"
+      },
+      {
+        "at": "2026-11-01T19:34:26.830462Z",
+        "container": "chat-ticket08-benchmark-valkey-1",
+        "cpu_percent": "0.20%",
+        "memory": "5.074MiB / 7.631GiB",
+        "memory_percent": "0.06%"
+      },
+      {
+        "at": "2026-11-01T19:34:26.830462Z",
+        "container": "chat-ticket08-benchmark-worker-1",
+        "cpu_percent": "0.78%",
+        "memory": "8.477MiB / 7.631GiB",
+        "memory_percent": "0.11%"
+      },
+      {
+        "at": "2026-11-01T19:34:29.8868738Z",
+        "container": "chat-ticket08-benchmark-api-1",
+        "cpu_percent": "10.96%",
+        "memory": "20.04MiB / 7.631GiB",
+        "memory_percent": "0.26%"
+      },
+      {
+        "at": "2026-11-01T19:34:29.8868738Z",
+        "container": "chat-ticket08-benchmark-postgres-1",
+        "cpu_percent": "10.00%",
+        "memory": "83.82MiB / 7.631GiB",
+        "memory_percent": "1.07%"
+      },
+      {
+        "at": "2026-11-01T19:34:29.8868738Z",
+        "container": "chat-ticket08-benchmark-valkey-1",
+        "cpu_percent": "2.47%",
+        "memory": "4.641MiB / 7.631GiB",
+        "memory_percent": "0.06%"
+      },
+      {
+        "at": "2026-11-01T19:34:29.8868738Z",
+        "container": "chat-ticket08-benchmark-worker-1",
+        "cpu_percent": "0.88%",
+        "memory": "8.684MiB / 7.631GiB",
+        "memory_percent": "0.11%"
+      },
+      {
+        "at": "2026-11-01T19:34:32.9449501Z",
+        "container": "chat-ticket08-benchmark-api-1",
+        "cpu_percent": "8.91%",
+        "memory": "19.96MiB / 7.631GiB",
+        "memory_percent": "0.26%"
+      },
+      {
+        "at": "2026-11-01T19:34:32.9449501Z",
+        "container": "chat-ticket08-benchmark-postgres-1",
+        "cpu_percent": "10.87%",
+        "memory": "83.87MiB / 7.631GiB",
+        "memory_percent": "1.07%"
+      },
+      {
+        "at": "2026-11-01T19:34:32.9449501Z",
+        "container": "chat-ticket08-benchmark-valkey-1",
+        "cpu_percent": "0.18%",
+        "memory": "5.289MiB / 7.631GiB",
+        "memory_percent": "0.07%"
+      },
+      {
+        "at": "2026-11-01T19:34:32.9449501Z",
+        "container": "chat-ticket08-benchmark-worker-1",
+        "cpu_percent": "0.75%",
+        "memory": "8.426MiB / 7.631GiB",
+        "memory_percent": "0.11%"
+      },
+      {
+        "at": "2026-11-01T19:34:36.0014557Z",
+        "container": "chat-ticket08-benchmark-api-1",
+        "cpu_percent": "0.76%",
+        "memory": "19.81MiB / 7.631GiB",
+        "memory_percent": "0.25%"
+      },
+      {
+        "at": "2026-11-01T19:34:36.0014557Z",
+        "container": "chat-ticket08-benchmark-postgres-1",
+        "cpu_percent": "13.73%",
+        "memory": "88.55MiB / 7.631GiB",
+        "memory_percent": "1.13%"
+      },
+      {
+        "at": "2026-11-01T19:34:36.0014557Z",
+        "container": "chat-ticket08-benchmark-valkey-1",
+        "cpu_percent": "2.09%",
+        "memory": "4.969MiB / 7.631GiB",
+        "memory_percent": "0.06%"
+      },
+      {
+        "at": "2026-11-01T19:34:36.0014557Z",
+        "container": "chat-ticket08-benchmark-worker-1",
+        "cpu_percent": "0.27%",
+        "memory": "8.676MiB / 7.631GiB",
+        "memory_percent": "0.11%"
+      }
+    ],
+    "probe_errors": 0
+  },
+  "limitations": [
+    "This result is local-container evidence only; AWS RDS failover and ECS autoscaling were not exercised.",
+    "The harness's reconnect loop is benchmark-client behavior and is not a claim about the separately owned frontend implementation.",
+    "No stretch-target capacity is implied by this run."
+  ]
+}

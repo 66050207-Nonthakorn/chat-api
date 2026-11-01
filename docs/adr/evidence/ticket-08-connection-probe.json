@@ -1,0 +1,71 @@
+{
+  "started_at": "2026-11-01T19:29:34.2265728Z",
+  "completed_at": "2026-11-01T19:29:47.2924463Z",
+  "environment": "local isolated Docker Compose; public HTTP/WebSocket clients; PostgreSQL and Valkey",
+  "workload": {
+    "target_connections": 100,
+    "target_messages_per_second": 10,
+    "configured_duration": "10s",
+    "connection_ramp": "56.0029ms",
+    "payload_bytes": 256,
+    "traffic_mix": "50% group / 50% private",
+    "group_room_size": 2,
+    "private_room_size": 2,
+    "observed_connections": 100,
+    "accepted_messages": 100,
+    "accepted_messages_per_second": 9.99978410466118,
+    "attempted_messages": 100,
+    "elapsed": "10.0002159s"
+  },
+  "acceptance_latency": {
+    "count": 100,
+    "p50_ms": 3.925,
+    "p95_ms": 5.2894,
+    "p99_ms": 9.2003,
+    "max_ms": 23.3885
+  },
+  "submit_to_first_live_frame_latency": {
+    "count": 100,
+    "p50_ms": 141.3404,
+    "p95_ms": 241.7634,
+    "p99_ms": 243.9466,
+    "max_ms": 245.6269
+  },
+  "traffic": {
+    "group_messages": 50,
+    "private_messages": 50,
+    "live_unique_messages": 100,
+    "live_missing_messages": 0,
+    "duplicate_frames": 0,
+    "recovered_by_sync": 0,
+    "not_found_by_sync": 0
+  },
+  "websockets": {
+    "subscribe_acks": 100,
+    "disconnects": 0,
+    "reconnects": 0,
+    "dial_failures": 0,
+    "dial_failure_reasons": {},
+    "read_failures": 0
+  },
+  "errors": {
+    "http_status_counts": {},
+    "sync_errors": 0,
+    "docker_probe_errors": 0
+  },
+  "recovery": {
+    "outbox_pending_peak": 0,
+    "outbox_pending_final": 0,
+    "outbox_oldest_age_peak_seconds": 0
+  },
+  "resources": {
+    "sampling_interval": "",
+    "samples": null,
+    "probe_errors": 0
+  },
+  "limitations": [
+    "This result is local-container evidence only; AWS RDS failover and ECS autoscaling were not exercised.",
+    "The harness's reconnect loop is benchmark-client behavior and is not a claim about the separately owned frontend implementation.",
+    "No stretch-target capacity is implied by this run."
+  ]
+}
