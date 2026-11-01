@@ -3,7 +3,6 @@ package httpapi
 import (
 	"net/http"
 	"strconv"
-	"strings"
 
 	"cloudchat/internal/auth"
 )
@@ -102,19 +101,4 @@ func (h *handler) listRooms(w http.ResponseWriter, r *http.Request) {
 		Items      []room  `json:"items"`
 		NextCursor *string `json:"next_cursor"`
 	}{Items: items, NextCursor: nextCursor})
-}
-
-func isCanonicalUUID(value string) bool {
-	if len(value) != 36 || strings.ToLower(value) != value || value[8] != '-' || value[13] != '-' || value[18] != '-' || value[23] != '-' {
-		return false
-	}
-	for index, character := range value {
-		if index == 8 || index == 13 || index == 18 || index == 23 {
-			continue
-		}
-		if !((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f')) {
-			return false
-		}
-	}
-	return true
 }

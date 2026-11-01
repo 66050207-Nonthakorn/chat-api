@@ -11,9 +11,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"cloudchat/internal/apierror"
 	"cloudchat/internal/auth"
 	"cloudchat/internal/config"
 	"cloudchat/internal/health"
+	"cloudchat/internal/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -92,29 +94,10 @@ func requirePrincipal(w http.ResponseWriter, r *http.Request) (auth.Principal, b
 	return principal, true
 }
 
-type apiError struct {
-	Code      string        `json:"code"`
-	Message   string        `json:"message"`
-	RequestID string        `json:"request_id"`
-	Retryable bool          `json:"retryable"`
-	Details   []errorDetail `json:"details"`
-}
-
-type errorDetail struct {
-	Field string `json:"field"`
-	Code  string `json:"code"`
-}
+type errorDetail = apierror.Detail
 
 func writeError(w http.ResponseWriter, r *http.Request, status int, code, message string, retryable bool, details []errorDetail) {
-	if details == nil {
-		details = []errorDetail{}
-	}
-	writeJSON(w, status, struct {
-		Error apiError `json:"error"`
-	}{Error: apiError{
-		Code: code, Message: message, RequestID: w.Header().Get("X-Request-ID"),
-		Retryable: retryable, Details: details,
-	}})
+	apierror.Write(w, status, code, message, retryable, details)
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
@@ -148,7 +131,7 @@ func dependencyUnavailable(w http.ResponseWriter, r *http.Request) {
 func (h *handler) serveRoom(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/v1/rooms/")
 	parts := strings.Split(path, "/")
-	if len(parts) != 2 || !isCanonicalUUID(parts[0]) {
+	if len(parts) != 2 || !uuid.IsCanonical(parts[0]) {
 		writeError(w, r, http.StatusNotFound, "ROOM_NOT_FOUND", "Room not found", false, nil)
 		return
 	}

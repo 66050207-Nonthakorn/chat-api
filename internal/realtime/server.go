@@ -13,9 +13,11 @@ import (
 	"sync"
 	"time"
 
+	"cloudchat/internal/apierror"
 	"cloudchat/internal/auth"
 	"cloudchat/internal/config"
 	"cloudchat/internal/outbox"
+	"cloudchat/internal/uuid"
 	"github.com/coder/websocket"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -122,33 +124,33 @@ func normalizeOptions(options Options) Options {
 // must have installed the authenticated principal in the request context.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeHandshakeError(w, r, http.StatusMethodNotAllowed, "INVALID_REQUEST", "Method not allowed")
+		apierror.Write(w, http.StatusMethodNotAllowed, "INVALID_REQUEST", "Method not allowed", false, nil)
 		return
 	}
 	if r.URL.RawQuery != "" {
-		writeHandshakeError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "Query parameters are not supported")
+		apierror.Write(w, http.StatusBadRequest, "INVALID_REQUEST", "Query parameters are not supported", false, nil)
 		return
 	}
 	if !sameHostOrigin(r) {
-		writeHandshakeError(w, r, http.StatusForbidden, "ORIGIN_NOT_ALLOWED", "Origin is not allowed")
+		apierror.Write(w, http.StatusForbidden, "ORIGIN_NOT_ALLOWED", "Origin is not allowed", false, nil)
 		return
 	}
 	if !requestsSubprotocol(r, webSocketProtocol) {
-		writeHandshakeError(w, r, http.StatusBadRequest, "SUBPROTOCOL_REQUIRED", "The chat.v1 subprotocol is required")
+		apierror.Write(w, http.StatusBadRequest, "SUBPROTOCOL_REQUIRED", "The chat.v1 subprotocol is required", false, nil)
 		return
 	}
 	principal, ok := auth.PrincipalFromContext(r.Context())
 	if !ok {
-		writeHandshakeError(w, r, http.StatusUnauthorized, "UNAUTHENTICATED", "Authentication required")
+		apierror.Write(w, http.StatusUnauthorized, "UNAUTHENTICATED", "Authentication required", false, nil)
 		return
 	}
 	valid, err := s.sessionValid(r.Context(), principal)
 	if err != nil {
-		writeHandshakeError(w, r, http.StatusServiceUnavailable, "DEPENDENCY_UNAVAILABLE", "A required service is unavailable")
+		apierror.Write(w, http.StatusServiceUnavailable, "DEPENDENCY_UNAVAILABLE", "A required service is unavailable", true, nil)
 		return
 	}
 	if !valid {
-		writeHandshakeError(w, r, http.StatusUnauthorized, "UNAUTHENTICATED", "Authentication required")
+		apierror.Write(w, http.StatusUnauthorized, "UNAUTHENTICATED", "Authentication required", false, nil)
 		return
 	}
 
@@ -156,7 +158,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	closed := s.closed
 	s.mu.RUnlock()
 	if closed {
-		writeHandshakeError(w, r, http.StatusServiceUnavailable, "DEPENDENCY_UNAVAILABLE", "The WebSocket service is shutting down")
+		apierror.Write(w, http.StatusServiceUnavailable, "DEPENDENCY_UNAVAILABLE", "The WebSocket service is shutting down", true, nil)
 		return
 	}
 	connection, err := websocket.Accept(w, r, &websocket.AcceptOptions{
@@ -336,7 +338,7 @@ func (s *Server) sessionValid(parent context.Context, principal auth.Principal) 
 			)`, principal.UserID).Scan(&valid)
 		return valid, err
 	}
-	if !isCanonicalUUID(principal.SessionID) || !isCanonicalUUID(principal.UserID) {
+	if !uuid.IsCanonical(principal.SessionID) || !uuid.IsCanonical(principal.UserID) {
 		return false, nil
 	}
 	err := s.pool.QueryRow(ctx, `
@@ -406,26 +408,6 @@ func requestsSubprotocol(r *http.Request, wanted string) bool {
 	return false
 }
 
-func writeHandshakeError(w http.ResponseWriter, r *http.Request, status int, code, message string) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(struct {
-		Error struct {
-			Code      string `json:"code"`
-			Message   string `json:"message"`
-			RequestID string `json:"request_id"`
-			Retryable bool   `json:"retryable"`
-			Details   []any  `json:"details"`
-		} `json:"error"`
-	}{Error: struct {
-		Code      string `json:"code"`
-		Message   string `json:"message"`
-		RequestID string `json:"request_id"`
-		Retryable bool   `json:"retryable"`
-		Details   []any  `json:"details"`
-	}{Code: code, Message: message, RequestID: w.Header().Get("X-Request-ID"), Retryable: status >= 500, Details: []any{}}})
-}
-
 type socket struct {
 	server    *Server
 	conn      *websocket.Conn
@@ -482,19 +464,19 @@ func (c *socket) handleCommand(messageType websocket.MessageType, payload []byte
 		c.stop(websocket.StatusPolicyViolation, "invalid command")
 		return false
 	}
-	if command.RequestID == nil || !isCanonicalUUID(*command.RequestID) {
+	if command.RequestID == nil || !uuid.IsCanonical(*command.RequestID) {
 		c.respondError(nil, "INVALID_REQUEST", "Request ID must be a UUID", false)
 		return true
 	}
 	switch command.Type {
 	case "subscribe":
-		if !isCanonicalUUID(command.RoomID) {
+		if !uuid.IsCanonical(command.RoomID) {
 			c.respondError(command.RequestID, "INVALID_REQUEST", "Room ID must be a UUID", false)
 			return true
 		}
 		return c.subscribe(*command.RequestID, command.RoomID)
 	case "unsubscribe":
-		if !isCanonicalUUID(command.RoomID) {
+		if !uuid.IsCanonical(command.RoomID) {
 			c.respondError(command.RequestID, "INVALID_REQUEST", "Room ID must be a UUID", false)
 			return true
 		}
@@ -868,7 +850,7 @@ type messagePayload struct {
 }
 
 func (m messagePayload) valid() bool {
-	if !isCanonicalUUID(m.MessageID) || !isCanonicalUUID(m.RoomID) || !isCanonicalUUID(m.Sender.UserID) || !isCanonicalUUID(m.ClientMessageID) || m.Text == "" || m.CreatedAt == "" {
+	if !uuid.IsCanonical(m.MessageID) || !uuid.IsCanonical(m.RoomID) || !uuid.IsCanonical(m.Sender.UserID) || !uuid.IsCanonical(m.ClientMessageID) || m.Text == "" || m.CreatedAt == "" {
 		return false
 	}
 	sequence, err := strconv.ParseInt(m.Seq, 10, 64)
@@ -890,19 +872,4 @@ type protocolError struct {
 	Code      string `json:"code"`
 	Message   string `json:"message"`
 	Retryable bool   `json:"retryable"`
-}
-
-func isCanonicalUUID(value string) bool {
-	if len(value) != 36 || strings.ToLower(value) != value || value[8] != '-' || value[13] != '-' || value[18] != '-' || value[23] != '-' {
-		return false
-	}
-	for index, character := range value {
-		if index == 8 || index == 13 || index == 18 || index == 23 {
-			continue
-		}
-		if !((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f')) {
-			return false
-		}
-	}
-	return true
 }

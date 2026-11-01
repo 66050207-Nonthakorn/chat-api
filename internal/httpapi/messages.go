@@ -19,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	"cloudchat/internal/auth"
+	"cloudchat/internal/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -67,7 +68,7 @@ func (h *handler) sendMessage(w http.ResponseWriter, r *http.Request, roomID str
 		writeError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "Request body must be valid JSON", false, nil)
 		return
 	}
-	if !isCanonicalUUID(request.ClientMessageID) {
+	if !uuid.IsCanonical(request.ClientMessageID) {
 		writeValidationError(w, r, "client_message_id", "invalid_uuid")
 		return
 	}

@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+
+	"cloudchat/internal/uuid"
 )
 
 type roomCursor struct {
@@ -45,7 +47,7 @@ func (h *handler) decodeRoomCursor(token, userID string) (string, error) {
 		return "", errors.New("invalid cursor")
 	}
 	var cursor roomCursor
-	if err := json.Unmarshal(payload, &cursor); err != nil || cursor.Version != 1 || cursor.UserID != userID || !isCanonicalUUID(cursor.RoomID) {
+	if err := json.Unmarshal(payload, &cursor); err != nil || cursor.Version != 1 || cursor.UserID != userID || !uuid.IsCanonical(cursor.RoomID) {
 		return "", errors.New("invalid cursor")
 	}
 	return cursor.RoomID, nil
