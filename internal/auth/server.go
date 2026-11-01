@@ -510,25 +510,14 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	tx, err := s.pool.Begin(ctx)
 	if err == nil {
-		var epoch int64
-		err = tx.QueryRow(ctx, `SELECT auth_epoch FROM app_users WHERE user_id = $1::uuid AND is_active FOR UPDATE`, session.principal.UserID).Scan(&epoch)
-		if errors.Is(err, pgx.ErrNoRows) {
+		err = lockCurrentSession(ctx, tx, session)
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		if tx != nil {
 			_ = tx.Rollback(ctx)
-			apierror.Write(w, http.StatusUnauthorized, "UNAUTHENTICATED", "Authentication required", false, nil)
-			return
 		}
-		if err == nil {
-			err = tx.QueryRow(ctx, `
-				SELECT session_id FROM app_sessions
-				WHERE session_id = $1::uuid AND user_id = $2::uuid AND auth_epoch = $3
-				  AND revoked_at IS NULL AND expires_at > clock_timestamp() AND idle_expires_at > clock_timestamp()
-				FOR UPDATE`, session.principal.SessionID, session.principal.UserID, epoch).Scan(new(string))
-			if errors.Is(err, pgx.ErrNoRows) {
-				_ = tx.Rollback(ctx)
-				apierror.Write(w, http.StatusUnauthorized, "UNAUTHENTICATED", "Authentication required", false, nil)
-				return
-			}
-		}
+		apierror.Write(w, http.StatusUnauthorized, "UNAUTHENTICATED", "Authentication required", false, nil)
+		return
 	}
 	if err == nil {
 		_, err = tx.Exec(ctx, `UPDATE app_sessions SET revoked_at = COALESCE(revoked_at, clock_timestamp()) WHERE session_id = $1::uuid AND user_id = $2::uuid`, session.principal.SessionID, session.principal.UserID)
@@ -556,25 +545,14 @@ func (s *Server) logoutAll(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	tx, err := s.pool.Begin(ctx)
 	if err == nil {
-		var epoch int64
-		err = tx.QueryRow(ctx, `SELECT auth_epoch FROM app_users WHERE user_id = $1::uuid AND is_active FOR UPDATE`, session.principal.UserID).Scan(&epoch)
-		if errors.Is(err, pgx.ErrNoRows) {
+		err = lockCurrentSession(ctx, tx, session)
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		if tx != nil {
 			_ = tx.Rollback(ctx)
-			apierror.Write(w, http.StatusUnauthorized, "UNAUTHENTICATED", "Authentication required", false, nil)
-			return
 		}
-		if err == nil {
-			err = tx.QueryRow(ctx, `
-				SELECT session_id FROM app_sessions
-				WHERE session_id = $1::uuid AND user_id = $2::uuid AND auth_epoch = $3
-				  AND revoked_at IS NULL AND expires_at > clock_timestamp() AND idle_expires_at > clock_timestamp()
-				FOR UPDATE`, session.principal.SessionID, session.principal.UserID, epoch).Scan(new(string))
-			if errors.Is(err, pgx.ErrNoRows) {
-				_ = tx.Rollback(ctx)
-				apierror.Write(w, http.StatusUnauthorized, "UNAUTHENTICATED", "Authentication required", false, nil)
-				return
-			}
-		}
+		apierror.Write(w, http.StatusUnauthorized, "UNAUTHENTICATED", "Authentication required", false, nil)
+		return
 	}
 	if err == nil {
 		_, err = tx.Exec(ctx, `UPDATE app_users SET auth_epoch = auth_epoch + 1 WHERE user_id = $1::uuid`, session.principal.UserID)
@@ -593,6 +571,18 @@ func (s *Server) logoutAll(w http.ResponseWriter, r *http.Request) {
 	}
 	http.SetCookie(w, s.expiredSessionCookie())
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func lockCurrentSession(ctx context.Context, tx pgx.Tx, session *activeSession) error {
+	var authEpoch int64
+	if err := tx.QueryRow(ctx, `SELECT auth_epoch FROM app_users WHERE user_id = $1::uuid AND is_active FOR UPDATE`, session.principal.UserID).Scan(&authEpoch); err != nil {
+		return err
+	}
+	return tx.QueryRow(ctx, `
+		SELECT session_id FROM app_sessions
+		WHERE session_id = $1::uuid AND user_id = $2::uuid AND auth_epoch = $3
+		  AND revoked_at IS NULL AND expires_at > clock_timestamp() AND idle_expires_at > clock_timestamp()
+		FOR UPDATE`, session.principal.SessionID, session.principal.UserID, authEpoch).Scan(new(string))
 }
 
 func (s *Server) authenticate(ctx context.Context, cookieValue string, refreshTokens bool) (*activeSession, error) {
