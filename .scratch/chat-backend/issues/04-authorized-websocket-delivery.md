@@ -1,5 +1,7 @@
 # 04: Stream authorized messages over WebSocket
 
+**Type:** task
+
 **What to build:** A connected client can subscribe to an authorized room and receive committed messages from any API replica, with bounded resource use and a clear recovery path when live delivery is missed.
 
 **Blocked by:** 03: Publish outbox events with recoverable leases.
@@ -13,7 +15,7 @@
 - [x] Per-socket subscriptions and outbound queues are bounded; full queues close with the specified recovery code.
 - [x] WebSocket protocol tests use real clients and verify cross-replica delivery, authorization, reconnect, and recovery via HTTP sync.
 
-## Resolution
+## Answer
 
 Implemented in `9e254a4` and `48ced56`, then merged into `integration` at `48ced56`.
 

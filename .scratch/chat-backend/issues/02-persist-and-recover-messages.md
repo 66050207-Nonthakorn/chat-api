@@ -1,5 +1,7 @@
 # 02: Send and recover persisted messages over HTTP
 
+**Type:** task
+
 **What to build:** An authorized user can list their rooms, send a message safely across retries, and page through history or a bounded sync snapshot after reconnecting.
 
 **Blocked by:** 01: Run a local backend foundation.
@@ -14,7 +16,7 @@
 - [x] History and snapshot sync pagination preserve order, reject invalid cursors, and do not skip gaps.
 - [x] HTTP integration tests exercise the public endpoints against PostgreSQL, including 100 concurrent retries and retry after an unknown response outcome.
 
-## Resolution
+## Answer
 
 Implemented in `df747ad` and merged into `integration` at `5b37837`.
 

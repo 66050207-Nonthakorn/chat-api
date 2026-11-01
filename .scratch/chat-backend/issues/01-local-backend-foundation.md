@@ -1,5 +1,7 @@
 # 01: Run a local backend foundation
 
+**Type:** task
+
 **What to build:** A developer can start the backend locally, apply its schema and repeatable demo seed, and check process and dependency health without AWS.
 
 **Blocked by:** None (can start immediately).
@@ -13,7 +15,7 @@
 - [x] Local test identity is explicitly disabled outside local mode.
 - [x] Startup, migration, seed, and shutdown commands are documented.
 
-## Resolution
+## Answer
 
 Implemented in `31937de` and merged into `integration` at `bf425b7`.
 

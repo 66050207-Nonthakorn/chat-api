@@ -1,5 +1,7 @@
 # 05: Add Cognito-backed sessions
 
+**Type:** task
+
 **What to build:** An invited user can authenticate through Cognito while the backend keeps provider tokens out of browser JavaScript and enforces revocation, CSRF, and Origin rules across replicas.
 
 **Blocked by:** 04: Stream authorized messages over WebSocket.
@@ -13,7 +15,7 @@
 - [x] Local mock identity cannot be enabled in AWS configuration.
 - [x] Auth routes are tested at the public HTTP seam using a fake OIDC provider; live Cognito verification is tracked separately as an external prerequisite.
 
-## Resolution
+## Answer
 
 Implemented in `5215b14` and `2f9944e`, then merged into `integration` at `2f9944e`.
 

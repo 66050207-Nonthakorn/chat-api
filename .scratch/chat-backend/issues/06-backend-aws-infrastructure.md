@@ -1,5 +1,7 @@
 # 06: Define backend AWS runtime infrastructure
 
+**Type:** task
+
 **What to build:** The backend has a repeatable Terraform plan for its private compute and data services, with least-privilege access and explicit inputs for shared networking owned outside this backend scope.
 
 **Blocked by:** 01: Run a local backend foundation.
@@ -14,7 +16,7 @@
 - [x] The plan documents resources that incur cost, replacement/data-retention risks, and cleanup behavior.
 - [x] Live apply remains gated on approved AWS account/plan, region, credits, and shared network inputs.
 
-## Resolution
+## Answer
 
 Implemented in `a837685` and merged into `integration` at `a837685`.
 

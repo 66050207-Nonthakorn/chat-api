@@ -1,5 +1,7 @@
 # 03: Publish outbox events with recoverable leases
 
+**Type:** task
+
 **What to build:** A committed message is eventually published by a separate worker, and a replacement worker can recover work after a crash without a stale worker overwriting the new lease owner.
 
 **Blocked by:** 02: Send and recover persisted messages over HTTP.
@@ -13,7 +15,7 @@
 - [x] Retry uses bounded concurrency and full jitter; repeated failures remain pending and produce a safe error code/alert signal.
 - [x] Worker tests exercise PostgreSQL and Valkey at their public service boundaries and verify effects through the message/live-delivery contract.
 
-## Resolution
+## Answer
 
 Implemented in `9aeb27e` and merged into `integration` at `62db25d`.
 

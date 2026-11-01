@@ -1,5 +1,7 @@
 # 08: Measure backend load and recovery
 
+**Type:** task
+
 **What to build:** The team can reproduce backend load and failure scenarios and report measured limits, latency, errors, and recovery behavior without claiming capacity that was not measured.
 
 **Blocked by:** 07: Release and operate backend services safely.
@@ -12,7 +14,7 @@
 - [x] RDS failover and autoscaling are tested only when account permissions, credits, and time permit; otherwise report them as unverified.
 - [x] The report separates measured results from stretch targets and includes cleanup evidence for any temporary AWS resources.
 
-## Resolution
+## Answer
 
 Implemented in `6ee28d3` and `64ff1d9`, then merged into `integration` at `64ff1d9`.
 

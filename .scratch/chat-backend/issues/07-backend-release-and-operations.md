@@ -1,5 +1,7 @@
 # 07: Release and operate backend services safely
 
+**Type:** task
+
 **What to build:** Operators can build immutable API and worker artifacts, run migrations once, roll backend tasks safely, observe failures, and recover without losing committed messages.
 
 **Blocked by:** 05: Add Cognito-backed sessions; 06: Define backend AWS runtime infrastructure.
@@ -14,7 +16,7 @@
 - [x] Logs carry request correlation IDs and omit message bodies, credentials, cookies, and session tokens.
 - [x] Unavailable CI/AWS environment is reported as unverified; no deployment success is inferred from local builds.
 
-## Resolution
+## Answer
 
 Implemented in `5b814f0`, `26f394b`, and `4819fd3`, then merged into `integration` at `4819fd3`.
 
