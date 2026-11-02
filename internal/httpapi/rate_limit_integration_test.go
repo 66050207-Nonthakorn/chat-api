@@ -304,8 +304,7 @@ func rateLimitedRequest(server *httptest.Server, method, url, authenticatedUser,
 	return rateRequestResult{status: response.StatusCode, retryAfter: response.Header.Get("Retry-After"), err: err}, data
 }
 
-func runMessageRequests(env *webSocketTestEnv, count int, userID, body string, forgeUserHeader bool) []rateRequestResult {
-	path := "/api/v1/rooms/" + demo.GroupRoomID + "/messages"
+func runConcurrentRateRequests(env *webSocketTestEnv, count int, send func(*httptest.Server, int) rateRequestResult) []rateRequestResult {
 	results := make([]rateRequestResult, count)
 	start := make(chan struct{})
 	var wait sync.WaitGroup
@@ -318,12 +317,7 @@ func runMessageRequests(env *webSocketTestEnv, count int, userID, body string, f
 			if index%2 == 1 {
 				server = env.replica
 			}
-			claimedUser := ""
-			if forgeUserHeader {
-				claimedUser = fmt.Sprintf("attacker-selected-%d", index)
-			}
-			result, _ := rateLimitedRequest(server, http.MethodPost, server.URL+path, userID, claimedUser, body)
-			results[index] = result
+			results[index] = send(server, index)
 		}(index)
 	}
 	close(start)
@@ -331,38 +325,32 @@ func runMessageRequests(env *webSocketTestEnv, count int, userID, body string, f
 	return results
 }
 
+func runMessageRequests(env *webSocketTestEnv, count int, userID, body string, forgeUserHeader bool) []rateRequestResult {
+	path := "/api/v1/rooms/" + demo.GroupRoomID + "/messages"
+	return runConcurrentRateRequests(env, count, func(server *httptest.Server, index int) rateRequestResult {
+		claimedUser := ""
+		if forgeUserHeader {
+			claimedUser = fmt.Sprintf("attacker-selected-%d", index)
+		}
+		result, _ := rateLimitedRequest(server, http.MethodPost, server.URL+path, userID, claimedUser, body)
+		return result
+	})
+}
+
 func runReadRequests(env *webSocketTestEnv, count int) []rateRequestResult {
-	results := make([]rateRequestResult, count)
-	start := make(chan struct{})
-	var wait sync.WaitGroup
-	for index := 0; index < count; index++ {
-		wait.Add(1)
-		go func(index int) {
-			defer wait.Done()
-			<-start
-			server := env.primary
-			if index%2 == 1 {
-				server = env.replica
-			}
-			request, err := http.NewRequest(http.MethodGet, server.URL+"/api/v1/rooms", nil)
-			if err != nil {
-				results[index].err = err
-				return
-			}
-			request.Header.Set(auth.LocalTestUserHeader, demo.UserAID)
-			response, err := server.Client().Do(request)
-			if err != nil {
-				results[index].err = err
-				return
-			}
-			results[index].status = response.StatusCode
-			results[index].retryAfter = response.Header.Get("Retry-After")
-			_ = response.Body.Close()
-		}(index)
-	}
-	close(start)
-	wait.Wait()
-	return results
+	return runConcurrentRateRequests(env, count, func(server *httptest.Server, _ int) rateRequestResult {
+		request, err := http.NewRequest(http.MethodGet, server.URL+"/api/v1/rooms", nil)
+		if err != nil {
+			return rateRequestResult{err: err}
+		}
+		request.Header.Set(auth.LocalTestUserHeader, demo.UserAID)
+		response, err := server.Client().Do(request)
+		if err != nil {
+			return rateRequestResult{err: err}
+		}
+		defer response.Body.Close()
+		return rateRequestResult{status: response.StatusCode, retryAfter: response.Header.Get("Retry-After")}
+	})
 }
 
 func assertRateLimitResponse(t *testing.T, response *http.Response, body []byte, minimumRetryAfter int) {

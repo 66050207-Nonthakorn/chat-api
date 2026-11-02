@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"cloudchat/internal/auth"
+	"cloudchat/internal/httpjson"
 )
 
 type room struct {
@@ -97,7 +98,7 @@ func (h *handler) listRooms(w http.ResponseWriter, r *http.Request) {
 		}
 		nextCursor = &token
 	}
-	writeJSON(w, http.StatusOK, struct {
+	httpjson.Write(w, http.StatusOK, struct {
 		Items      []room  `json:"items"`
 		NextCursor *string `json:"next_cursor"`
 	}{Items: items, NextCursor: nextCursor})

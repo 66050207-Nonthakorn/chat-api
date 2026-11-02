@@ -53,6 +53,28 @@ func TestWebSocketHandshakeRequiresIdentityOriginAndSubprotocol(t *testing.T) {
 	}
 }
 
+func TestWebSocketRejectsUnknownFieldsAndTrailingJSON(t *testing.T) {
+	env := newWebSocketTestEnv(t, realtime.Options{})
+	for _, payload := range []string{
+		`{"type":"ping","request_id":"55555555-5555-4555-8555-555555555555","extra":true}`,
+		`{"type":"ping","request_id":"55555555-5555-4555-8555-555555555555"} {}`,
+	} {
+		t.Run(payload, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			client := dialChatSocket(t, ctx, env.replica.URL, demo.UserBID)
+			t.Cleanup(func() { _ = client.Close(websocket.StatusNormalClosure, "") })
+			if err := client.Write(ctx, websocket.MessageText, []byte(payload)); err != nil {
+				t.Fatalf("write command: %v", err)
+			}
+			_, _, err := client.Read(ctx)
+			if got := websocket.CloseStatus(err); got != websocket.StatusPolicyViolation {
+				t.Fatalf("close status = %d, error = %v, want policy violation", got, err)
+			}
+		})
+	}
+}
+
 func TestWebSocketShutdownClosesClientWithGoingAwayAndRejectsNewConnections(t *testing.T) {
 	env := newWebSocketTestEnv(t, realtime.Options{})
 	cfg := config.Config{

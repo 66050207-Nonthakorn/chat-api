@@ -2,8 +2,6 @@ package httpapi_test
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,9 +17,7 @@ import (
 	"cloudchat/internal/config"
 	"cloudchat/internal/demo"
 	"cloudchat/internal/httpapi"
-	"cloudchat/internal/migrations"
-	"cloudchat/internal/seed"
-	"github.com/jackc/pgx/v5"
+	"cloudchat/internal/testutil"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -38,50 +34,7 @@ func newTestServer(t *testing.T) *testServer {
 		t.Skip("set TEST_DATABASE_URL to run PostgreSQL-backed HTTP tests")
 	}
 
-	ctx := context.Background()
-	admin, err := pgxpool.New(ctx, databaseURL)
-	if err != nil {
-		t.Fatalf("connect to test PostgreSQL: %v", err)
-	}
-
-	var schemaBytes [8]byte
-	if _, err := rand.Read(schemaBytes[:]); err != nil {
-		admin.Close()
-		t.Fatalf("create isolated schema name: %v", err)
-	}
-	schema := "http_test_" + hex.EncodeToString(schemaBytes[:])
-	schemaSQL := (pgx.Identifier{schema}).Sanitize()
-	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+schemaSQL); err != nil {
-		admin.Close()
-		t.Fatalf("create isolated schema: %v", err)
-	}
-
-	poolConfig, err := pgxpool.ParseConfig(databaseURL)
-	if err != nil {
-		_, _ = admin.Exec(ctx, "DROP SCHEMA "+schemaSQL+" CASCADE")
-		admin.Close()
-		t.Fatalf("parse test PostgreSQL URL: %v", err)
-	}
-	poolConfig.ConnConfig.RuntimeParams["search_path"] = schema
-	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
-	if err != nil {
-		_, _ = admin.Exec(ctx, "DROP SCHEMA "+schemaSQL+" CASCADE")
-		admin.Close()
-		t.Fatalf("connect to isolated test schema: %v", err)
-	}
-
-	if err := migrations.Up(ctx, pool); err != nil {
-		pool.Close()
-		_, _ = admin.Exec(ctx, "DROP SCHEMA "+schemaSQL+" CASCADE")
-		admin.Close()
-		t.Fatalf("apply migrations in isolated test schema: %v", err)
-	}
-	if err := seed.Apply(ctx, pool); err != nil {
-		pool.Close()
-		_, _ = admin.Exec(ctx, "DROP SCHEMA "+schemaSQL+" CASCADE")
-		admin.Close()
-		t.Fatalf("seed isolated test schema: %v", err)
-	}
+	pool := testutil.IsolatedDatabase(t, databaseURL, "http_test_")
 
 	cfg := config.Config{
 		Environment:             config.EnvironmentLocal,
@@ -93,12 +46,7 @@ func newTestServer(t *testing.T) *testServer {
 	}
 	server := httptest.NewServer(httpapi.NewHandler(cfg, pool, nil))
 	test := &testServer{server: server, pool: pool}
-	t.Cleanup(func() {
-		server.Close()
-		pool.Close()
-		_, _ = admin.Exec(context.Background(), "DROP SCHEMA "+schemaSQL+" CASCADE")
-		admin.Close()
-	})
+	t.Cleanup(server.Close)
 	return test
 }
 
@@ -576,6 +524,7 @@ func TestSendValidationAndAuthenticationUseCommonErrorEnvelope(t *testing.T) {
 		`{"client_message_id":"dddddddd-dddd-4ddd-8ddd-dddddddddddd","text":"   "}`,
 		`{"client_message_id":"not-a-uuid","text":"hello"}`,
 		`{"client_message_id":"dddddddd-dddd-4ddd-8ddd-dddddddddddd","text":"hello","extra":true}`,
+		`{"client_message_id":"dddddddd-dddd-4ddd-8ddd-dddddddddddd","text":"hello"} {}`,
 	} {
 		result, resultBody := test.request(t, http.MethodPost, messagePath, demo.UserAID, body)
 		if result.StatusCode != http.StatusUnprocessableEntity && result.StatusCode != http.StatusBadRequest {

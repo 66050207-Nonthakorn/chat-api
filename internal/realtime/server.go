@@ -1,13 +1,9 @@
 package realtime
 
 import (
-	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -19,8 +15,11 @@ import (
 	"cloudchat/internal/apierror"
 	"cloudchat/internal/auth"
 	"cloudchat/internal/config"
+	chatmessage "cloudchat/internal/message"
 	"cloudchat/internal/outbox"
 	"cloudchat/internal/ratelimit"
+	"cloudchat/internal/requestid"
+	"cloudchat/internal/strictjson"
 	"cloudchat/internal/uuid"
 	"github.com/coder/websocket"
 	"github.com/jackc/pgx/v5"
@@ -180,15 +179,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		apierror.Write(w, http.StatusServiceUnavailable, "DEPENDENCY_UNAVAILABLE", "The WebSocket service is shutting down", true, nil)
 		return
 	}
-	connectionID := apierror.RequestIDFromContext(r.Context())
+	connectionID := requestid.FromContext(r.Context())
 	if connectionID == "" {
-		var raw [16]byte
-		if _, err := rand.Read(raw[:]); err != nil {
+		generatedID, err := requestid.New()
+		if err != nil {
 			w.Header().Set("Retry-After", "1")
 			apierror.Write(w, http.StatusServiceUnavailable, "DEPENDENCY_UNAVAILABLE", "A required service is unavailable", true, nil)
 			return
 		}
-		connectionID = hex.EncodeToString(raw[:])
+		connectionID = generatedID
 	}
 	acceptOptions := &websocket.AcceptOptions{Subprotocols: []string{webSocketProtocol}}
 	if s.config.AppOrigin != "" {
@@ -320,8 +319,8 @@ func (s *Server) readEvents() {
 }
 
 func (s *Server) dispatch(payload string) {
-	var event messageCreatedEvent
-	if err := json.Unmarshal([]byte(payload), &event); err != nil || event.Type != "message.created" || !event.Message.valid() {
+	var event chatmessage.CreatedEvent
+	if err := json.Unmarshal([]byte(payload), &event); err != nil || event.Type != chatmessage.CreatedType || !validMessage(event.Message) {
 		return
 	}
 	frame, err := marshalFrame(outboundFrame{
@@ -333,10 +332,6 @@ func (s *Server) dispatch(payload string) {
 	if err != nil {
 		return
 	}
-	frame.roomID = event.Message.RoomID
-	frame.private = true
-	frame.message = true
-
 	s.mu.RLock()
 	clients := make([]*socket, 0, len(s.roomSockets[frame.roomID]))
 	for client := range s.roomSockets[frame.roomID] {
@@ -525,13 +520,7 @@ func (c *socket) readLoop() {
 		if !process {
 			continue
 		}
-		valid, err := c.server.sessionValid(c.ctx, c.principal)
-		if err != nil {
-			c.stop(websocket.StatusTryAgainLater, "")
-			return
-		}
-		if !valid {
-			c.stop(4401, "")
+		if !c.checkSessionResult(c.server.sessionValid(c.ctx, c.principal)) {
 			return
 		}
 		if !c.handleCommand(messageType, payload) {
@@ -579,15 +568,8 @@ func (c *socket) handleCommand(messageType websocket.MessageType, payload []byte
 		c.stop(websocket.StatusPolicyViolation, "text JSON frames required")
 		return false
 	}
-	decoder := json.NewDecoder(bytes.NewReader(payload))
-	decoder.DisallowUnknownFields()
 	var command clientCommand
-	if err := decoder.Decode(&command); err != nil {
-		c.stop(websocket.StatusPolicyViolation, "invalid command")
-		return false
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+	if err := strictjson.Decode(payload, &command); err != nil {
 		c.stop(websocket.StatusPolicyViolation, "invalid command")
 		return false
 	}
@@ -609,13 +591,7 @@ func (c *socket) handleCommand(messageType websocket.MessageType, payload []byte
 		}
 		return c.unsubscribe(*command.RequestID, command.RoomID, startedAt)
 	case "ping":
-		valid, err := c.server.touchSessionIdle(c.ctx, c.principal)
-		if err != nil {
-			c.stop(websocket.StatusTryAgainLater, "")
-			return false
-		}
-		if !valid {
-			c.stop(4401, "")
+		if !c.checkSessionResult(c.server.touchSessionIdle(c.ctx, c.principal)) {
 			return false
 		}
 		return c.respondAcknowledgement(struct {
@@ -852,17 +828,23 @@ func (c *socket) monitorSession() {
 		case <-c.ctx.Done():
 			return
 		case <-ticker.C:
-			valid, err := c.server.sessionValid(c.ctx, c.principal)
-			if err != nil {
-				c.stop(websocket.StatusTryAgainLater, "")
-				return
-			}
-			if !valid {
-				c.stop(4401, "")
+			if !c.checkSessionResult(c.server.sessionValid(c.ctx, c.principal)) {
 				return
 			}
 		}
 	}
+}
+
+func (c *socket) checkSessionResult(valid bool, err error) bool {
+	if err != nil {
+		c.stop(websocket.StatusTryAgainLater, "")
+		return false
+	}
+	if !valid {
+		c.stop(4401, "")
+		return false
+	}
+	return true
 }
 
 func (c *socket) stop(code websocket.StatusCode, reason string) {
@@ -989,32 +971,12 @@ type outboundFrame struct {
 	value   any
 }
 
-type messageCreatedEvent struct {
-	Type    string         `json:"type"`
-	Message messagePayload `json:"message"`
-}
-
-type messagePayload struct {
-	MessageID       string        `json:"message_id"`
-	RoomID          string        `json:"room_id"`
-	Seq             string        `json:"seq"`
-	Sender          messageSender `json:"sender"`
-	ClientMessageID string        `json:"client_message_id"`
-	Text            string        `json:"text"`
-	CreatedAt       string        `json:"created_at"`
-}
-
-func (m messagePayload) valid() bool {
+func validMessage(m chatmessage.Message) bool {
 	if !uuid.IsCanonical(m.MessageID) || !uuid.IsCanonical(m.RoomID) || !uuid.IsCanonical(m.Sender.UserID) || !uuid.IsCanonical(m.ClientMessageID) || m.Text == "" || m.CreatedAt == "" {
 		return false
 	}
 	sequence, err := strconv.ParseInt(m.Seq, 10, 64)
 	return err == nil && sequence > 0 && strconv.FormatInt(sequence, 10) == m.Seq
-}
-
-type messageSender struct {
-	UserID      string `json:"user_id"`
-	DisplayName string `json:"display_name"`
 }
 
 type protocolErrorFrame struct {

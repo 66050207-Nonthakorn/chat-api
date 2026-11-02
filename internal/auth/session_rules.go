@@ -39,14 +39,18 @@ func NewSessionRules(pool *pgxpool.Pool) SessionRules {
 	return SessionRules{pool: pool}
 }
 
-// Current reports whether principal refers to an active persisted session.
-// Principals without a session ID are handled by the local test identity path.
-func (rules SessionRules) Current(parent context.Context, principal Principal) (bool, error) {
+func (rules SessionRules) validPrincipal(principal Principal) (bool, error) {
 	if rules.pool == nil {
 		return false, errors.New("session rules require PostgreSQL")
 	}
-	if !uuid.IsCanonical(principal.UserID) || !uuid.IsCanonical(principal.SessionID) {
-		return false, nil
+	return uuid.IsCanonical(principal.UserID) && uuid.IsCanonical(principal.SessionID), nil
+}
+
+// Current reports whether principal refers to an active persisted session.
+// Principals without a session ID are handled by the local test identity path.
+func (rules SessionRules) Current(parent context.Context, principal Principal) (bool, error) {
+	if valid, err := rules.validPrincipal(principal); !valid || err != nil {
+		return false, err
 	}
 	ctx, cancel := rules.contextWithTimeout(parent)
 	defer cancel()
@@ -67,11 +71,8 @@ func (rules SessionRules) Current(parent context.Context, principal Principal) (
 // TouchIdle atomically checks a persisted session and renews its idle expiry.
 // The new idle deadline never extends beyond the absolute expiry.
 func (rules SessionRules) TouchIdle(parent context.Context, principal Principal) (bool, error) {
-	if rules.pool == nil {
-		return false, errors.New("session rules require PostgreSQL")
-	}
-	if !uuid.IsCanonical(principal.UserID) || !uuid.IsCanonical(principal.SessionID) {
-		return false, nil
+	if valid, err := rules.validPrincipal(principal); !valid || err != nil {
+		return false, err
 	}
 	ctx, cancel := rules.contextWithTimeout(parent)
 	defer cancel()

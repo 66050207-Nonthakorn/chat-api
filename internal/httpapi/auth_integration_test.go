@@ -252,6 +252,30 @@ func TestIdleAndAbsoluteSessionExpiryAreEnforced(t *testing.T) {
 	}
 }
 
+func TestLogoutRevokesOnlyCurrentSession(t *testing.T) {
+	app := newAuthIntegrationApp(t, true)
+	firstCookie, firstCSRF := app.login(t, demo.UserAID, "logout-first")
+	secondCookie, _ := app.login(t, demo.UserAID, "logout-second")
+	request, _ := http.NewRequest(http.MethodPost, app.server.URL+"/auth/logout", nil)
+	request.AddCookie(firstCookie)
+	request.Header.Set("Origin", app.config.AppOrigin)
+	request.Header.Set("X-CSRF-Token", firstCSRF)
+	response, err := app.client.Do(request)
+	if err != nil {
+		t.Fatalf("logout request: %v", err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("logout status = %d, want 204", response.StatusCode)
+	}
+	if got := app.sessionStatus(t, firstCookie); got != http.StatusUnauthorized {
+		t.Fatalf("logged-out session status = %d, want 401", got)
+	}
+	if got := app.sessionStatus(t, secondCookie); got != http.StatusOK {
+		t.Fatalf("other session status = %d, want 200", got)
+	}
+}
+
 func TestLogoutAllRevokesEverySession(t *testing.T) {
 	app := newAuthIntegrationApp(t, true)
 	firstCookie, firstCSRF := app.login(t, demo.UserAID, "logout-all-first")

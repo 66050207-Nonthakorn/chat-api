@@ -2,10 +2,10 @@ package auth
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"time"
 
+	"cloudchat/internal/uuid"
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/oauth2"
 )
@@ -139,7 +139,7 @@ func (s *Server) claimRefresh(ctx context.Context, session *activeSession) (refr
 		}
 		return claim, nil
 	}
-	leaseTokenValue, err := randomUUID()
+	leaseTokenValue, err := uuid.New()
 	if err != nil {
 		return refreshClaim{}, err
 	}
@@ -189,12 +189,7 @@ func (s *Server) performRefresh(ctx context.Context, session *activeSession, cla
 		bundle.RefreshToken = token.RefreshToken
 	}
 	bundle.AccessToken = token.AccessToken
-	plaintext, err := json.Marshal(bundle)
-	if err != nil {
-		s.revokeRefreshClaim(ctx, claim)
-		return err
-	}
-	keyID, ciphertext, err := s.keys.seal(plaintext)
+	ciphertext, keyID, err := s.encryptBundle(bundle)
 	if err != nil {
 		s.revokeRefreshClaim(ctx, claim)
 		return err

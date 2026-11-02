@@ -17,6 +17,8 @@ import (
 
 	"cloudchat/internal/apierror"
 	"cloudchat/internal/config"
+	"cloudchat/internal/httpjson"
+	"cloudchat/internal/uuid"
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -246,13 +248,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			methodNotAllowed(w)
 			return
 		}
-		s.logout(w, r)
+		s.logout(w, r, false)
 	case "/auth/logout-all":
 		if r.Method != http.MethodPost {
 			methodNotAllowed(w)
 			return
 		}
-		s.logoutAll(w, r)
+		s.logout(w, r, true)
 	case "/api/v1/session":
 		if r.Method != http.MethodGet {
 			methodNotAllowed(w)
@@ -457,7 +459,7 @@ func (s *Server) preparedIdentity(ctx context.Context, issuer, subject string) (
 func (s *Server) createSession(ctx context.Context, identity preparedUser, tokenValue, csrf string, ciphertext []byte, keyID string, tokenExpiry time.Time) error {
 	tokenHash := sha256.Sum256([]byte(tokenValue))
 	csrfHash := sha256.Sum256([]byte(csrf))
-	sessionID, err := randomUUID()
+	sessionID, err := uuid.New()
 	if err != nil {
 		return err
 	}
@@ -497,14 +499,14 @@ func (s *Server) getSession(w http.ResponseWriter, r *http.Request) {
 		dependencyUnavailable(w)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	httpjson.Write(w, http.StatusOK, map[string]any{
 		"user":       map[string]string{"user_id": session.principal.UserID, "display_name": session.principal.DisplayName},
 		"session":    map[string]time.Time{"expires_at": session.expiresAt.UTC(), "idle_expires_at": session.idleExpiresAt.UTC()},
 		"csrf_token": bundle.CSRFToken,
 	})
 }
 
-func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
+func (s *Server) logout(w http.ResponseWriter, r *http.Request, all bool) {
 	session, ok := r.Context().Value(activeSessionKey{}).(*activeSession)
 	if !ok {
 		apierror.Write(w, http.StatusUnauthorized, "UNAUTHENTICATED", "Authentication required", false, nil)
@@ -523,46 +525,15 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 		apierror.Write(w, http.StatusUnauthorized, "UNAUTHENTICATED", "Authentication required", false, nil)
 		return
 	}
-	if err == nil {
-		_, err = tx.Exec(ctx, `UPDATE app_sessions SET revoked_at = COALESCE(revoked_at, clock_timestamp()) WHERE session_id = $1::uuid AND user_id = $2::uuid`, session.principal.SessionID, session.principal.UserID)
-	}
-	if err == nil {
-		err = tx.Commit(ctx)
-	} else if tx != nil {
-		_ = tx.Rollback(ctx)
-	}
-	if err != nil {
-		dependencyUnavailable(w)
-		return
-	}
-	http.SetCookie(w, s.expiredSessionCookie())
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func (s *Server) logoutAll(w http.ResponseWriter, r *http.Request) {
-	session, ok := r.Context().Value(activeSessionKey{}).(*activeSession)
-	if !ok {
-		apierror.Write(w, http.StatusUnauthorized, "UNAUTHENTICATED", "Authentication required", false, nil)
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-	tx, err := s.pool.Begin(ctx)
-	if err == nil {
-		err = lockCurrentSession(ctx, tx, session)
-	}
-	if errors.Is(err, pgx.ErrNoRows) {
-		if tx != nil {
-			_ = tx.Rollback(ctx)
-		}
-		apierror.Write(w, http.StatusUnauthorized, "UNAUTHENTICATED", "Authentication required", false, nil)
-		return
-	}
-	if err == nil {
+	if err == nil && all {
 		_, err = tx.Exec(ctx, `UPDATE app_users SET auth_epoch = auth_epoch + 1 WHERE user_id = $1::uuid`, session.principal.UserID)
 	}
 	if err == nil {
-		_, err = tx.Exec(ctx, `UPDATE app_sessions SET revoked_at = COALESCE(revoked_at, clock_timestamp()) WHERE user_id = $1::uuid`, session.principal.UserID)
+		if all {
+			_, err = tx.Exec(ctx, `UPDATE app_sessions SET revoked_at = COALESCE(revoked_at, clock_timestamp()) WHERE user_id = $1::uuid`, session.principal.UserID)
+		} else {
+			_, err = tx.Exec(ctx, `UPDATE app_sessions SET revoked_at = COALESCE(revoked_at, clock_timestamp()) WHERE session_id = $1::uuid AND user_id = $2::uuid`, session.principal.SessionID, session.principal.UserID)
+		}
 	}
 	if err == nil {
 		err = tx.Commit(ctx)
@@ -681,17 +652,6 @@ func randomOpaque(bytes int) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
-func randomUUID() (string, error) {
-	var raw [16]byte
-	if _, err := io.ReadFull(rand.Reader, raw[:]); err != nil {
-		return "", err
-	}
-	raw[6] = (raw[6] & 0x0f) | 0x40
-	raw[8] = (raw[8] & 0x3f) | 0x80
-	encoded := fmt.Sprintf("%x", raw)
-	return encoded[0:8] + "-" + encoded[8:12] + "-" + encoded[12:16] + "-" + encoded[16:20] + "-" + encoded[20:32], nil
-}
-
 func isStateChangingMethod(method string) bool {
 	switch method {
 	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
@@ -707,10 +667,4 @@ func methodNotAllowed(w http.ResponseWriter) {
 
 func dependencyUnavailable(w http.ResponseWriter) {
 	apierror.Write(w, http.StatusServiceUnavailable, "DEPENDENCY_UNAVAILABLE", "A required service is unavailable", true, nil)
-}
-
-func writeJSON(w http.ResponseWriter, status int, value any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(value)
 }

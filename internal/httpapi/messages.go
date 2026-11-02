@@ -1,13 +1,8 @@
 package httpapi
 
 import (
-	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"mime"
 	"net/http"
@@ -19,26 +14,21 @@ import (
 	"unicode/utf8"
 
 	"cloudchat/internal/auth"
+	"cloudchat/internal/httpjson"
+	chatmessage "cloudchat/internal/message"
+	"cloudchat/internal/strictjson"
 	"cloudchat/internal/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
 const maxMessageRequestBytes = 16 * 1024
 
-type message struct {
-	MessageID       string        `json:"message_id"`
-	RoomID          string        `json:"room_id"`
-	Seq             string        `json:"seq"`
-	Sender          messageSender `json:"sender"`
-	ClientMessageID string        `json:"client_message_id"`
-	Text            string        `json:"text"`
-	CreatedAt       string        `json:"created_at"`
-}
-
-type messageSender struct {
-	UserID      string `json:"user_id"`
-	DisplayName string `json:"display_name"`
-}
+const memberMessagesQuery = `
+	SELECT m.message_id::text, m.room_id::text, m.seq::text, m.sender_user_id::text,
+	       m.sender_display_name, m.client_message_id::text, m.text, m.created_at
+	FROM messages m
+	JOIN room_memberships rm ON rm.room_id = m.room_id AND rm.user_id = $2::uuid
+	WHERE m.room_id = $1::uuid`
 
 type sendMessageRequest struct {
 	ClientMessageID string `json:"client_message_id"`
@@ -147,9 +137,9 @@ func (h *handler) sendMessage(w http.ResponseWriter, r *http.Request, roomID str
 			dependencyUnavailable(w, r)
 			return
 		}
-		writeJSON(w, http.StatusOK, struct {
-			Message  message `json:"message"`
-			Replayed bool    `json:"replayed"`
+		httpjson.Write(w, http.StatusOK, struct {
+			Message  chatmessage.Message `json:"message"`
+			Replayed bool                `json:"replayed"`
 		}{Message: existing, Replayed: true})
 		return
 	}
@@ -171,12 +161,12 @@ func (h *handler) sendMessage(w http.ResponseWriter, r *http.Request, roomID str
 		dependencyUnavailable(w, r)
 		return
 	}
-	messageID, err := newUUID()
+	messageID, err := uuid.New()
 	if err != nil {
 		dependencyUnavailable(w, r)
 		return
 	}
-	outboxID, err := newUUID()
+	outboxID, err := uuid.New()
 	if err != nil {
 		dependencyUnavailable(w, r)
 		return
@@ -201,14 +191,14 @@ func (h *handler) sendMessage(w http.ResponseWriter, r *http.Request, roomID str
 		dependencyUnavailable(w, r)
 		return
 	}
-	writeJSON(w, http.StatusCreated, struct {
-		Message  message `json:"message"`
-		Replayed bool    `json:"replayed"`
-	}{Message: message{
+	httpjson.Write(w, http.StatusCreated, struct {
+		Message  chatmessage.Message `json:"message"`
+		Replayed bool                `json:"replayed"`
+	}{Message: chatmessage.Message{
 		MessageID:       messageID,
 		RoomID:          roomID,
 		Seq:             strconv.FormatInt(seq, 10),
-		Sender:          messageSender{UserID: principal.UserID, DisplayName: displayName},
+		Sender:          chatmessage.Sender{UserID: principal.UserID, DisplayName: displayName},
 		ClientMessageID: request.ClientMessageID,
 		Text:            request.Text,
 		CreatedAt:       createdAt.UTC().Format(time.RFC3339Nano),
@@ -223,15 +213,9 @@ func decodeSendRequest(w http.ResponseWriter, r *http.Request) (sendMessageReque
 	if !utf8.Valid(body) {
 		return sendMessageRequest{}, errors.New("invalid utf-8")
 	}
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.DisallowUnknownFields()
 	var request sendMessageRequest
-	if err := decoder.Decode(&request); err != nil {
+	if err := strictjson.Decode(body, &request); err != nil {
 		return sendMessageRequest{}, err
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return sendMessageRequest{}, errors.New("multiple JSON values")
 	}
 	return request, nil
 }
@@ -253,8 +237,8 @@ func writeRoomNotFound(w http.ResponseWriter, r *http.Request) {
 	writeError(w, r, http.StatusNotFound, "ROOM_NOT_FOUND", "Room not found", false, nil)
 }
 
-func scanMessage(row interface{ Scan(...any) error }) (message, error) {
-	var result message
+func scanMessage(row interface{ Scan(...any) error }) (chatmessage.Message, error) {
+	var result chatmessage.Message
 	var senderID string
 	var createdAt time.Time
 	err := row.Scan(
@@ -262,22 +246,11 @@ func scanMessage(row interface{ Scan(...any) error }) (message, error) {
 		&result.Sender.DisplayName, &result.ClientMessageID, &result.Text, &createdAt,
 	)
 	if err != nil {
-		return message{}, err
+		return chatmessage.Message{}, err
 	}
 	result.Sender.UserID = senderID
 	result.CreatedAt = createdAt.UTC().Format(time.RFC3339Nano)
 	return result, nil
-}
-
-func newUUID() (string, error) {
-	var raw [16]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		return "", err
-	}
-	raw[6] = (raw[6] & 0x0f) | 0x40
-	raw[8] = (raw[8] & 0x3f) | 0x80
-	encoded := hex.EncodeToString(raw[:])
-	return fmt.Sprintf("%s-%s-%s-%s-%s", encoded[:8], encoded[8:12], encoded[12:16], encoded[16:20], encoded[20:]), nil
 }
 
 func parseDecimalSequence(value string) (int64, error) {
@@ -347,20 +320,16 @@ func (h *handler) messageHistory(w http.ResponseWriter, r *http.Request, roomID 
 		writeRoomNotFound(w, r)
 		return
 	}
-	rows, err := h.pool.Query(ctx, `
-		SELECT m.message_id::text, m.room_id::text, m.seq::text, m.sender_user_id::text,
-		       m.sender_display_name, m.client_message_id::text, m.text, m.created_at
-		FROM messages m
-		JOIN room_memberships rm ON rm.room_id = m.room_id AND rm.user_id = $2::uuid
-		WHERE m.room_id = $1::uuid AND ($3::bigint IS NULL OR m.seq < $3::bigint)
-	ORDER BY m.seq DESC
+	rows, err := h.pool.Query(ctx, memberMessagesQuery+`
+		AND ($3::bigint IS NULL OR m.seq < $3::bigint)
+		ORDER BY m.seq DESC
 		LIMIT $4`, roomID, principal.UserID, beforeSeq, limit+1)
 	if err != nil {
 		dependencyUnavailable(w, r)
 		return
 	}
 	defer rows.Close()
-	items := make([]message, 0, limit+1)
+	items := make([]chatmessage.Message, 0, limit+1)
 	for rows.Next() {
 		item, err := scanMessage(rows)
 		if err != nil {
@@ -382,10 +351,10 @@ func (h *handler) messageHistory(w http.ResponseWriter, r *http.Request, roomID 
 		value := items[len(items)-1].Seq
 		nextBeforeSeq = &value
 	}
-	writeJSON(w, http.StatusOK, struct {
-		Items         []message `json:"items"`
-		NextBeforeSeq *string   `json:"next_before_seq"`
-		HasMore       bool      `json:"has_more"`
+	httpjson.Write(w, http.StatusOK, struct {
+		Items         []chatmessage.Message `json:"items"`
+		NextBeforeSeq *string               `json:"next_before_seq"`
+		HasMore       bool                  `json:"has_more"`
 	}{Items: items, NextBeforeSeq: nextBeforeSeq, HasMore: hasMore})
 }
 
@@ -446,12 +415,8 @@ func (h *handler) syncMessages(w http.ResponseWriter, r *http.Request, roomID st
 		invalidSequenceQuery(w, r, "after_seq")
 		return
 	}
-	rows, err := h.pool.Query(ctx, `
-		SELECT m.message_id::text, m.room_id::text, m.seq::text, m.sender_user_id::text,
-		       m.sender_display_name, m.client_message_id::text, m.text, m.created_at
-		FROM messages m
-		JOIN room_memberships rm ON rm.room_id = m.room_id AND rm.user_id = $2::uuid
-		WHERE m.room_id = $1::uuid AND m.seq > $3::bigint AND m.seq <= $4::bigint
+	rows, err := h.pool.Query(ctx, memberMessagesQuery+`
+		AND m.seq > $3::bigint AND m.seq <= $4::bigint
 		ORDER BY m.seq ASC
 		LIMIT $5`, roomID, principal.UserID, afterSeq, throughSeq, limit+1)
 	if err != nil {
@@ -459,7 +424,7 @@ func (h *handler) syncMessages(w http.ResponseWriter, r *http.Request, roomID st
 		return
 	}
 	defer rows.Close()
-	items := make([]message, 0, limit+1)
+	items := make([]chatmessage.Message, 0, limit+1)
 	expected := afterSeq + 1
 	for rows.Next() {
 		item, err := scanMessage(rows)
@@ -490,11 +455,11 @@ func (h *handler) syncMessages(w http.ResponseWriter, r *http.Request, roomID st
 	if len(items) > 0 {
 		nextAfterSeq = items[len(items)-1].Seq
 	}
-	writeJSON(w, http.StatusOK, struct {
-		Items        []message `json:"items"`
-		ThroughSeq   string    `json:"through_seq"`
-		NextAfterSeq string    `json:"next_after_seq"`
-		HasMore      bool      `json:"has_more"`
+	httpjson.Write(w, http.StatusOK, struct {
+		Items        []chatmessage.Message `json:"items"`
+		ThroughSeq   string                `json:"through_seq"`
+		NextAfterSeq string                `json:"next_after_seq"`
+		HasMore      bool                  `json:"has_more"`
 	}{Items: items, ThroughSeq: strconv.FormatInt(throughSeq, 10), NextAfterSeq: nextAfterSeq, HasMore: hasMore})
 }
 

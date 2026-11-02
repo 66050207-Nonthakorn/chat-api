@@ -1,14 +1,8 @@
 $ErrorActionPreference = "Stop"
 
 $repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
-$revision = (& git -C $repositoryRoot rev-parse --verify HEAD).Trim()
-if ($LASTEXITCODE -ne 0 -or $revision -notmatch "^[0-9a-f]{40}$") {
-  throw "Could not resolve a full Git source revision."
-}
-$workingTree = & git -C $repositoryRoot status --porcelain
-if ($LASTEXITCODE -ne 0 -or $workingTree) {
-  throw "Build a clean, committed source tree so the image revision identifies its source."
-}
+. (Join-Path $PSScriptRoot "source-revision.ps1")
+$revision = Get-CleanSourceRevision $repositoryRoot "Build a clean, committed source tree so the image revision identifies its source."
 
 Push-Location $repositoryRoot
 try {

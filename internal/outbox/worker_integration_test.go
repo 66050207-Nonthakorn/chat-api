@@ -3,8 +3,6 @@ package outbox_test
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -20,10 +18,8 @@ import (
 	"cloudchat/internal/config"
 	"cloudchat/internal/demo"
 	"cloudchat/internal/httpapi"
-	"cloudchat/internal/migrations"
 	"cloudchat/internal/outbox"
-	"cloudchat/internal/seed"
-	"github.com/jackc/pgx/v5"
+	"cloudchat/internal/testutil"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )
@@ -52,21 +48,7 @@ func TestPublishesCommittedMessageToValkeyAndMarksOutbox(t *testing.T) {
 	if err != nil {
 		t.Fatalf("receive published event: %v", err)
 	}
-	var event struct {
-		Type    string `json:"type"`
-		Message struct {
-			MessageID string `json:"message_id"`
-			RoomID    string `json:"room_id"`
-			Seq       string `json:"seq"`
-			Sender    struct {
-				UserID      string `json:"user_id"`
-				DisplayName string `json:"display_name"`
-			} `json:"sender"`
-			ClientMessageID string `json:"client_message_id"`
-			Text            string `json:"text"`
-			CreatedAt       string `json:"created_at"`
-		} `json:"message"`
-	}
+	var event testEvent
 	if err := json.Unmarshal([]byte(pubsubMessage.Payload), &event); err != nil {
 		t.Fatalf("decode published event %q: %v", pubsubMessage.Payload, err)
 	}
@@ -316,7 +298,7 @@ func newWorkerTestEnv(t *testing.T) *workerTestEnv {
 	t.Helper()
 	databaseURL := testingEnv(t, "TEST_DATABASE_URL", "")
 	valkeyURL := testingEnv(t, "TEST_VALKEY_URL", "")
-	pool := isolatedDatabase(t, databaseURL)
+	pool := testutil.IsolatedDatabase(t, databaseURL, "outbox_test_")
 	options, err := redis.ParseURL(valkeyURL)
 	if err != nil {
 		t.Fatalf("parse test Valkey URL: %v", err)
@@ -503,57 +485,6 @@ func syncMessage(t *testing.T, client *http.Client, baseURL, roomID, sequence st
 		t.Fatalf("sync items = %d, want 1: %s", len(result.Items), body)
 	}
 	return result.Items[0]
-}
-
-func isolatedDatabase(t *testing.T, databaseURL string) *pgxpool.Pool {
-	t.Helper()
-	ctx := context.Background()
-	admin, err := pgxpool.New(ctx, databaseURL)
-	if err != nil {
-		t.Fatalf("connect to test PostgreSQL: %v", err)
-	}
-	var schemaBytes [8]byte
-	if _, err := rand.Read(schemaBytes[:]); err != nil {
-		admin.Close()
-		t.Fatalf("create isolated schema name: %v", err)
-	}
-	schema := "outbox_test_" + hex.EncodeToString(schemaBytes[:])
-	schemaSQL := (pgx.Identifier{schema}).Sanitize()
-	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+schemaSQL); err != nil {
-		admin.Close()
-		t.Fatalf("create isolated schema: %v", err)
-	}
-	poolConfig, err := pgxpool.ParseConfig(databaseURL)
-	if err != nil {
-		_, _ = admin.Exec(ctx, "DROP SCHEMA "+schemaSQL+" CASCADE")
-		admin.Close()
-		t.Fatalf("parse test PostgreSQL URL: %v", err)
-	}
-	poolConfig.ConnConfig.RuntimeParams["search_path"] = schema
-	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
-	if err != nil {
-		_, _ = admin.Exec(ctx, "DROP SCHEMA "+schemaSQL+" CASCADE")
-		admin.Close()
-		t.Fatalf("connect to isolated schema: %v", err)
-	}
-	if err := migrations.Up(ctx, pool); err != nil {
-		pool.Close()
-		_, _ = admin.Exec(ctx, "DROP SCHEMA "+schemaSQL+" CASCADE")
-		admin.Close()
-		t.Fatalf("apply migrations: %v", err)
-	}
-	if err := seed.Apply(ctx, pool); err != nil {
-		pool.Close()
-		_, _ = admin.Exec(ctx, "DROP SCHEMA "+schemaSQL+" CASCADE")
-		admin.Close()
-		t.Fatalf("seed test fixtures: %v", err)
-	}
-	t.Cleanup(func() {
-		pool.Close()
-		_, _ = admin.Exec(context.Background(), "DROP SCHEMA "+schemaSQL+" CASCADE")
-		admin.Close()
-	})
-	return pool
 }
 
 func testingEnv(t *testing.T, name, defaultValue string) string {

@@ -7,14 +7,8 @@ param(
 $ErrorActionPreference = "Stop"
 
 $repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
-$revision = (& git -C $repositoryRoot rev-parse --verify HEAD).Trim()
-if ($LASTEXITCODE -ne 0 -or $revision -notmatch "^[0-9a-f]{40}$") {
-  throw "Could not resolve a full Git source revision."
-}
-$workingTree = & git -C $repositoryRoot status --porcelain
-if ($LASTEXITCODE -ne 0 -or $workingTree) {
-  throw "Publish only a clean commit whose CI checks have passed."
-}
+. (Join-Path $PSScriptRoot "source-revision.ps1")
+$revision = Get-CleanSourceRevision $repositoryRoot "Publish only a clean commit whose CI checks have passed."
 
 $apiRegistry = $ApiRepository.Split("/", 2)[0]
 $workerRegistry = $WorkerRepository.Split("/", 2)[0]

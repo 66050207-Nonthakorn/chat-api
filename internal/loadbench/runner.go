@@ -2,8 +2,6 @@ package loadbench
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +17,7 @@ import (
 	"time"
 
 	"cloudchat/internal/demo"
+	"cloudchat/internal/uuid"
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 )
@@ -1020,14 +1019,11 @@ func writeReport(path string, report Report) error {
 }
 
 func mustUUID() string {
-	var raw [16]byte
-	if _, err := rand.Read(raw[:]); err != nil {
+	value, err := uuid.New()
+	if err != nil {
 		panic("cryptographic random source unavailable: " + err.Error())
 	}
-	raw[6] = (raw[6] & 0x0f) | 0x40
-	raw[8] = (raw[8] & 0x3f) | 0x80
-	encoded := hex.EncodeToString(raw[:])
-	return encoded[:8] + "-" + encoded[8:12] + "-" + encoded[12:16] + "-" + encoded[16:20] + "-" + encoded[20:]
+	return value
 }
 
 func waitContext(ctx context.Context, duration time.Duration) bool {

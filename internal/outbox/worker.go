@@ -2,8 +2,6 @@ package outbox
 
 import (
 	"context"
-	crand "crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -12,6 +10,8 @@ import (
 	"time"
 
 	"cloudchat/internal/config"
+	"cloudchat/internal/message"
+	"cloudchat/internal/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )
@@ -279,7 +279,7 @@ type itemResult struct {
 }
 
 func (w *Worker) claimBatch(ctx context.Context) ([]claimedItem, string, error) {
-	token, err := newUUID()
+	token, err := uuid.New()
 	if err != nil {
 		return nil, "", fmt.Errorf("create outbox lease token: %w", err)
 	}
@@ -346,7 +346,7 @@ func (w *Worker) claimBatch(ctx context.Context) ([]claimedItem, string, error) 
 }
 
 func (w *Worker) processItem(ctx context.Context, item claimedItem, token string) itemResult {
-	if item.eventType != "message.created" || item.schema != 1 {
+	if item.eventType != message.CreatedType || item.schema != 1 {
 		return w.retryItem(ctx, item, token, "UNSUPPORTED_EVENT_SCHEMA")
 	}
 	valid, err := w.renewLease(ctx, item.outboxID, token)
@@ -357,13 +357,13 @@ func (w *Worker) processItem(ctx context.Context, item claimedItem, token string
 		return itemResult{kind: itemLeaseLost}
 	}
 
-	payload, err := json.Marshal(messageCreatedEnvelope{
-		Type: "message.created",
-		Message: messagePayload{
+	payload, err := json.Marshal(message.CreatedEvent{
+		Type: message.CreatedType,
+		Message: message.Message{
 			MessageID:       item.messageID,
 			RoomID:          item.roomID,
 			Seq:             item.sequence,
-			Sender:          messageSender{UserID: item.senderID, DisplayName: item.senderName},
+			Sender:          message.Sender{UserID: item.senderID, DisplayName: item.senderName},
 			ClientMessageID: item.clientID,
 			Text:            item.text,
 			CreatedAt:       item.createdAt.UTC().Format(time.RFC3339Nano),
@@ -458,36 +458,4 @@ func (w *Worker) retryDelay(attempt int) time.Duration {
 		return 0
 	}
 	return time.Duration(randv2.Int64N(int64(cap) + 1))
-}
-
-// messageCreatedEnvelope intentionally matches the API's v1 event contract.
-type messageCreatedEnvelope struct {
-	Type    string         `json:"type"`
-	Message messagePayload `json:"message"`
-}
-
-type messagePayload struct {
-	MessageID       string        `json:"message_id"`
-	RoomID          string        `json:"room_id"`
-	Seq             string        `json:"seq"`
-	Sender          messageSender `json:"sender"`
-	ClientMessageID string        `json:"client_message_id"`
-	Text            string        `json:"text"`
-	CreatedAt       string        `json:"created_at"`
-}
-
-type messageSender struct {
-	UserID      string `json:"user_id"`
-	DisplayName string `json:"display_name"`
-}
-
-func newUUID() (string, error) {
-	var raw [16]byte
-	if _, err := crand.Read(raw[:]); err != nil {
-		return "", err
-	}
-	raw[6] = (raw[6] & 0x0f) | 0x40
-	raw[8] = (raw[8] & 0x3f) | 0x80
-	encoded := hex.EncodeToString(raw[:])
-	return fmt.Sprintf("%s-%s-%s-%s-%s", encoded[:8], encoded[8:12], encoded[12:16], encoded[16:20], encoded[20:]), nil
 }

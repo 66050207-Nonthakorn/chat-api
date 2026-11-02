@@ -3,9 +3,6 @@ package httpapi
 import (
 	"bufio"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -19,6 +16,7 @@ import (
 	"cloudchat/internal/config"
 	"cloudchat/internal/health"
 	"cloudchat/internal/ratelimit"
+	"cloudchat/internal/requestid"
 	"cloudchat/internal/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -134,18 +132,12 @@ func writeError(w http.ResponseWriter, r *http.Request, status int, code, messag
 	apierror.Write(w, status, code, message, retryable, details)
 }
 
-func writeJSON(w http.ResponseWriter, status int, body any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(body)
-}
-
 func requestMetadata(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := requestID()
 		w.Header().Set("X-Request-ID", id)
 		w.Header().Set("Cache-Control", "no-store")
-		r = r.WithContext(apierror.WithRequestID(r.Context(), id))
+		r = r.WithContext(requestid.WithContext(r.Context(), id))
 		observed := &observedResponseWriter{ResponseWriter: w}
 		started := time.Now()
 		next.ServeHTTP(observed, r)
@@ -242,9 +234,8 @@ func safeRouteName(path string) string {
 var fallbackRequestSequence atomic.Uint64
 
 func requestID() string {
-	var raw [16]byte
-	if _, err := rand.Read(raw[:]); err == nil {
-		return hex.EncodeToString(raw[:])
+	if id, err := requestid.New(); err == nil {
+		return id
 	}
 	return fmt.Sprintf("%d-%d", time.Now().UTC().UnixNano(), fallbackRequestSequence.Add(1))
 }
