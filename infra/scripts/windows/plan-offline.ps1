@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-$moduleDirectory = $PSScriptRoot
+$moduleDirectory = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
 $planDirectory = Join-Path $moduleDirectory ".plan-only"
 New-Item -ItemType Directory -Force -Path $planDirectory | Out-Null
 

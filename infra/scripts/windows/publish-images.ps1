@@ -6,7 +6,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
+$repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\..\.."))
 . (Join-Path $PSScriptRoot "source-revision.ps1")
 $revision = Get-CleanSourceRevision $repositoryRoot "Publish only a clean commit whose CI checks have passed."
 

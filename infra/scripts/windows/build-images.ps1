@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-$repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
+$repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\..\.."))
 . (Join-Path $PSScriptRoot "source-revision.ps1")
 $revision = Get-CleanSourceRevision $repositoryRoot "Build a clean, committed source tree so the image revision identifies its source."
 

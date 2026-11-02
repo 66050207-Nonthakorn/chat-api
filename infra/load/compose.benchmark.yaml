@@ -30,7 +30,7 @@ services:
   migrate:
     image: cloudchat-ticket08-migrate:local
     build:
-      context: ../../..
+      context: ../..
       dockerfile: Dockerfile
       target: migrate
     environment:
@@ -43,7 +43,7 @@ services:
   api:
     image: cloudchat-ticket08-api:local
     build:
-      context: ../../..
+      context: ../..
       dockerfile: Dockerfile
       target: api
     environment:
@@ -64,7 +64,7 @@ services:
   worker:
     image: cloudchat-ticket08-worker:local
     build:
-      context: ../../..
+      context: ../..
       dockerfile: Dockerfile
       target: worker
     environment:

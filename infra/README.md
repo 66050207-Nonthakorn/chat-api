@@ -1,4 +1,4 @@
-# Backend AWS infrastructure
+# AWS infrastructure
 
 This Terraform root manages backend-owned AWS resources only. It consumes a VPC, private subnets, the shared ALB security group, the API target group, and private-subnet egress from the platform/network owner. It does not create or change networking, ingress, frontend hosting, S3, CloudFront, or Cognito resources.
 
@@ -22,7 +22,7 @@ The RDS-managed master secret is separate from the application connection secret
 The API loads browser/OIDC/session configuration, the worker loads only database and Valkey settings, and the migration task loads only `DATABASE_URL`:
 
 | Environment value | Storage | Consumer | Required at startup | Notes |
-| --- | --- | --- | --- |
+| --- | --- | --- | --- | --- |
 | `DATABASE_URL` | Secrets Manager | API, worker, migration | Yes | Least-privilege PostgreSQL application account. |
 | `VALKEY_URL` | Secrets Manager | API, worker | Yes | TLS `rediss://` URL with the matching AUTH token. |
 | `CURSOR_HMAC_KEY` | Secrets Manager | API | Yes | Random key of at least 32 bytes. |
@@ -54,6 +54,15 @@ terraform init `
   -backend-config="region=<state-bucket-region>"
 ```
 
+On Linux, run the equivalent from `infra/`:
+
+```bash
+terraform init \
+  -backend-config="bucket=<approved-state-bucket>" \
+  -backend-config="key=cloudchat/<environment>/backend/terraform.tfstate" \
+  -backend-config="region=<state-bucket-region>"
+```
+
 The deployment identity needs `s3:ListBucket` restricted to the state prefix, `s3:GetObject` and `s3:PutObject` on that state's object, and `s3:GetObject`, `s3:PutObject`, and `s3:DeleteObject` on its `.tflock` object. Add only the necessary KMS key permissions if the bucket uses a customer-managed key. Keep read access limited because reading state can reveal sensitive infrastructure data. Preserve the bucket, state objects, and lock configuration when the application stack is cleaned up; remove them only through a separately approved state-retirement process after all environments are decommissioned. See the official [backend permission and lock-file requirements](https://developer.hashicorp.com/terraform/language/backend/s3#permissions-required).
 
 The root defaults `enable_ecs_services` to `false`, allowing infrastructure and ECR to be prepared before application images or runtime secret values exist. Once ECR images have been pushed by digest and all five secret versions are active, enable the ECS services. Never apply the example values below: their account/network identifiers and image digests are deliberately fake, and `offline_validation` disables provider identity checks.
@@ -62,16 +71,39 @@ The root defaults `enable_ecs_services` to `false`, allowing infrastructure and 
 
 The root `.github/workflows/backend-ci.yml` runs Go tests against PostgreSQL and Valkey service containers, race tests, `go vet`, command builds, and Docker builds for the API and worker. Actions are pinned to full commit SHAs and the workflow has read-only repository permission. It does not authenticate to AWS or publish, deploy, or apply infrastructure. Its local Docker image IDs identify the tested build contents; they are not registry references and do not imply an AWS release.
 
-For a local clean commit, `./infra/backend/build-images.ps1` builds both Linux container targets and verifies the embedded `org.opencontainers.image.revision` label and Docker image ID. After that exact commit has passed the repository CI checks, an operator with an approved AWS identity can publish it to the immutable ECR repositories:
+For a local clean commit, the platform-specific `build-images` script builds both Linux container targets and verifies the embedded `org.opencontainers.image.revision` label and Docker image ID. From the repository root, run it on Windows with:
 
 ```powershell
-./infra/backend/publish-images.ps1 `
+.\infra\scripts\windows\build-images.ps1
+```
+
+On Linux, run:
+
+```sh
+bash ./infra/scripts/linux/build-images.sh
+```
+
+After that exact commit has passed the repository CI checks, an operator with an approved AWS identity can publish it to the immutable ECR repositories. On Windows:
+
+```powershell
+./infra/scripts/windows/publish-images.ps1 `
   -Region <region> `
   -ApiRepository <account>.dkr.ecr.<region>.amazonaws.com/<api-repository> `
   -WorkerRepository <account>.dkr.ecr.<region>.amazonaws.com/<worker-repository>
 ```
 
+On Linux:
+
+```sh
+bash ./infra/scripts/linux/publish-images.sh \
+  --region <region> \
+  --api-repository <account>.dkr.ecr.<region>.amazonaws.com/<api-repository> \
+  --worker-repository <account>.dkr.ecr.<region>.amazonaws.com/<worker-repository>
+```
+
 The script tags each image with the full Git commit SHA and reports the registry `repository@sha256:<digest>` reference. ECR rejects replacing an existing tag. Use the returned digests in Terraform; never deploy a mutable tag. The API image contains `/app/migrate` for the controlled task. The CI workflow intentionally does not run this script.
+
+Linux scripts require Bash and Git. Image builds use Docker; publishing also requires Docker Buildx and the AWS CLI. Offline validation uses Docker. The load runner requires Docker Compose, Go, curl, and Python 3.
 
 ## Schema-safe release and rollback
 
@@ -83,12 +115,24 @@ The migration executable does not run in API startup. A release operator uses th
 4. Run that exact task-definition ARN in private subnets and check the process exit code:
 
    ```powershell
-   ./infra/backend/run-migration.ps1 `
+   ./infra/scripts/windows/run-migration.ps1 `
      -Region <region> `
      -Cluster <backend-cluster> `
      -TaskDefinitionArn <migration-task-definition-arn> `
      -PrivateSubnets @(<private-subnet-a>, <private-subnet-b>) `
      -TaskSecurityGroups @(<backend-task-security-group>)
+   ```
+
+   On Linux, pass each subnet and security group as a repeated option:
+
+   ```sh
+   bash ./infra/scripts/linux/run-migration.sh \
+     --region <region> \
+     --cluster <backend-cluster> \
+     --task-definition-arn <migration-task-definition-arn> \
+     --private-subnet <private-subnet-a> \
+     --private-subnet <private-subnet-b> \
+     --task-security-group <backend-task-security-group>
    ```
 
    The migration task reads only `DATABASE_URL`, writes to the API CloudWatch log group, and exits before any API or worker task definition is updated. Do not terminate a migration task just because it is taking longer than expected; inspect its task state and migration logs first.
@@ -103,10 +147,16 @@ GitHub recommends pinning actions to full commit SHAs as the immutable action re
 
 ## Non-applying local validation
 
-From this directory, run the official Terraform container with dummy credentials and a non-secret AUTH-token placeholder:
+From this directory, run the platform-specific script to use the official Terraform container with dummy credentials and a non-secret AUTH-token placeholder. On Windows:
 
 ```powershell
-.\plan-offline.ps1
+.\scripts\windows\plan-offline.ps1
+```
+
+On Linux:
+
+```sh
+bash ./scripts/linux/plan-offline.sh
 ```
 
 The script formats the real module, then makes an ignored `.plan-only/` copy without the S3 backend declaration. It runs `init -backend=false`, `validate`, and `plan -refresh=false` against that copy because a plan cannot initialize the real S3 backend without the approved state bucket and AWS identity. The provider receives only fake credentials; no AWS API calls, remote state, or applies are part of this check. The S3 backend declaration in the real source keeps encryption and lock-file support enabled for later deployment.
@@ -125,7 +175,7 @@ This module does not create or configure Cognito, OTel instrumentation/collector
 
 ## Cost, replacement, retention, and cleanup
 
-Fargate tasks, the RDS instance/storage/backups, Valkey nodes, Secrets Manager secrets, CloudWatch logs/alarms/dashboard, ECR image storage, and the external ALB/NAT/endpoints/data transfer incur costs. The fixed task/database/cache defaults mirror an unapproved estimate in [the project cost reference](../../docs/adr/references/05-aws-cost-and-cleanup.md). CloudWatch retention defaults to seven days. The dashboard and alarms have no action destination by default. NAT, ALB, public IPv4, shared endpoints, DNS, and frontend assets are outside this module but can continue to cost after backend tasks stop.
+Fargate tasks, the RDS instance/storage/backups, Valkey nodes, Secrets Manager secrets, CloudWatch logs/alarms/dashboard, ECR image storage, and the external ALB/NAT/endpoints/data transfer incur costs. The fixed task/database/cache defaults mirror an unapproved estimate in [the project cost reference](../docs/adr/references/05-aws-cost-and-cleanup.md). CloudWatch retention defaults to seven days. The dashboard and alarms have no action destination by default. NAT, ALB, public IPv4, shared endpoints, DNS, and frontend assets are outside this module but can continue to cost after backend tasks stop.
 
 Changing engine versions, DB class/storage/AZ mode, cache node count/type, task sizes, image digest, or shared network inputs can trigger service restarts, failover, downtime, or replacement. Database passwords never appear in Terraform configuration: RDS manages its separate master secret in Secrets Manager, while the app-user `DATABASE_URL` is entered outside Terraform. Valkey's AUTH token uses the provider's write-only input and is never written into Terraform state by that resource. Still protect state and plan files; plan files can contain infrastructure values.
 

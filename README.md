@@ -5,8 +5,8 @@ This repository starts with the backend for the Cloud Computing chat project. Th
 ## Local prerequisites
 
 - Go 1.26 or newer
-- Docker Desktop with its Linux container engine running
-- Docker Compose
+- Docker Engine with Linux containers (Docker Desktop on Windows, or Docker Engine on Linux)
+- Docker Compose plugin
 
 The local database image currently uses PostgreSQL 17 and Valkey 8. This is a local development default; confirm the production engine/version during AWS readiness work.
 
@@ -20,7 +20,7 @@ The Compose file binds both services to loopback only. The PostgreSQL named volu
 
 ## Configure and start the backend
 
-From PowerShell, set local-only values in the current shell:
+On Windows, set local-only values in PowerShell:
 
 ```powershell
 $env:APP_ENV = "local"
@@ -28,6 +28,16 @@ $env:ENABLE_LOCAL_TEST_IDENTITY = "true"
 $env:DATABASE_URL = "postgres://chat:chat@localhost:5432/chat?sslmode=disable"
 $env:VALKEY_URL = "redis://localhost:6379/0"
 $env:HTTP_ADDR = "127.0.0.1:8080"
+```
+
+On Linux, set the same values in Bash:
+
+```bash
+export APP_ENV=local
+export ENABLE_LOCAL_TEST_IDENTITY=true
+export DATABASE_URL='postgres://chat:chat@localhost:5432/chat?sslmode=disable'
+export VALKEY_URL='redis://localhost:6379/0'
+export HTTP_ADDR='127.0.0.1:8080'
 ```
 
 Apply schema migrations, seed the demo users/rooms, then start the API:
@@ -53,6 +63,13 @@ Invoke-RestMethod http://127.0.0.1:8080/health/live
 Invoke-RestMethod http://127.0.0.1:8080/health/ready
 ```
 
+On Linux, use `curl`:
+
+```bash
+curl --fail http://127.0.0.1:8080/health/live
+curl --fail http://127.0.0.1:8080/health/ready
+```
+
 Both endpoints return only a status value, include a server-generated `X-Request-ID`, and disable caching. Liveness stays healthy while dependencies are unavailable; readiness returns 503 until PostgreSQL has the supported schema and Valkey accepts a subscription.
 
 ## Integration checks
@@ -68,7 +85,18 @@ go vet ./...
 go build ./cmd/...
 ```
 
-The `infra/backend/build-images.ps1` script builds both backend images from a clean commit and verifies their source revision label and content ID. GitHub Actions runs the same backend checks against service containers; it builds local images but does not push, deploy, or apply AWS infrastructure.
+On Linux, set the test URLs and run the same checks:
+
+```bash
+export TEST_DATABASE_URL='postgres://chat:chat@localhost:5432/chat?sslmode=disable'
+export TEST_VALKEY_URL='redis://localhost:6379/0'
+go test -count=1 ./...
+go test -race -count=1 ./...
+go vet ./...
+go build ./cmd/...
+```
+
+The Windows and Linux scripts under `infra/scripts/` build both container images from a clean commit and verify their source revision label and content ID. GitHub Actions runs the same backend checks against service containers; it builds local images but does not push, deploy, or apply AWS infrastructure.
 
 ## Local test identity
 
@@ -84,4 +112,4 @@ docker compose down
 
 This local setup does not use AWS and does not provide production credentials.
 
-For immutable ECR publication, the controlled one-off migration task, compatible schema rollout/rollback, Terraform telemetry, and unverified live-environment checks, see [the backend operations guide](infra/backend/README.md).
+For immutable ECR publication, the controlled one-off migration task, compatible schema rollout/rollback, Terraform telemetry, and unverified live-environment checks, see [the infrastructure operations guide](infra/README.md).

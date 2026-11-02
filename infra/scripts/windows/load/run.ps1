@@ -13,8 +13,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 $project = "chat-ticket08-benchmark"
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
-$composeFile = Join-Path $PSScriptRoot "compose.benchmark.yaml"
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..\..")).Path
+$composeFile = Join-Path $repoRoot "infra\load\compose.benchmark.yaml"
 $evidenceDir = Join-Path $repoRoot "docs\adr\evidence"
 
 function Invoke-Compose {
@@ -61,7 +61,7 @@ function Invoke-LoadRun {
         "--group-percent", "$GroupPercent",
         "--group-room-size", "2",
         "--private-room-size", "2",
-        "--compose-file", "infra/backend/load/compose.benchmark.yaml",
+        "--compose-file", "infra/load/compose.benchmark.yaml",
         "--compose-project", $project,
         "--output", $reportPath
     )

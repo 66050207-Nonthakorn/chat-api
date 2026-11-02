@@ -21,32 +21,52 @@ For broker/worker faults, `outbox_recovery_seconds` uses the first zero-pending 
 
 ## Isolated environment and commands
 
-`infra/backend/load/compose.benchmark.yaml` uses only project `chat-ticket08-benchmark`, loopback ports 15432 (PostgreSQL), 16379 (Valkey), and 18080 (API), and the named volume `chat-ticket08-benchmark-postgres-data`. It does not reuse the default Compose project or the shared `03-recoverable-outbox-worker-*` stack.
+`infra/load/compose.benchmark.yaml` uses only project `chat-ticket08-benchmark`, loopback ports 15432 (PostgreSQL), 16379 (Valkey), and 18080 (API), and the named volume `chat-ticket08-benchmark-postgres-data`. It does not reuse the default Compose project or the shared `03-recoverable-outbox-worker-*` stack.
 
 Run a 60-second baseline:
 
 ```powershell
-.\infra\backend\load\run.ps1 -Scenario baseline
+.\infra\scripts\windows\load\run.ps1 -Scenario baseline
+```
+
+On Linux:
+
+```sh
+bash ./infra/scripts/linux/load/run.sh --scenario baseline
 ```
 
 Run API restart, worker restart, or Valkey interruption scenarios:
 
 ```powershell
-.\infra\backend\load\run.ps1 -Scenario api-restart -DurationSeconds 30
-.\infra\backend\load\run.ps1 -Scenario worker-restart -DurationSeconds 30
-.\infra\backend\load\run.ps1 -Scenario valkey-interruption -DurationSeconds 30
+.\infra\scripts\windows\load\run.ps1 -Scenario api-restart -DurationSeconds 30
+.\infra\scripts\windows\load\run.ps1 -Scenario worker-restart -DurationSeconds 30
+.\infra\scripts\windows\load\run.ps1 -Scenario valkey-interruption -DurationSeconds 30
+```
+
+On Linux:
+
+```sh
+bash ./infra/scripts/linux/load/run.sh --scenario api-restart --duration-seconds 30
+bash ./infra/scripts/linux/load/run.sh --scenario worker-restart --duration-seconds 30
+bash ./infra/scripts/linux/load/run.sh --scenario valkey-interruption --duration-seconds 30
 ```
 
 By default, each fault run stops the selected service 12 seconds after all WebSocket subscriptions are ready, leaves it stopped for 5 seconds, starts it again, and allows a post-recovery interval. The recorded fault runs below used an 8-second delay and a 5-second interruption. API clients reconnect after a socket closes using a 250 ms exponential backoff capped at 3 seconds. This is load-harness behavior only; it does not describe or implement the separately owned frontend.
 
-Run all scenarios with `-Scenario all`. Change payload, traffic mix, connection count, rate, or duration with the corresponding script parameters; use 100 connections and 10 messages/second when collecting baseline evidence. The report also stores the prepared room sizes. The harness validates the group size is at most 20 but does not mutate the fixture.
+Run all scenarios with `-Scenario all` on Windows or `--scenario all` on Linux. Change payload, traffic mix, connection count, rate, or duration with the corresponding script parameters; use 100 connections and 10 messages/second when collecting baseline evidence. The report also stores the prepared room sizes. The harness validates the group size is at most 20 but does not mutate the fixture.
 
 Each run writes a JSON report and its readiness/fault timestamps under `docs/adr/evidence/`. A stderr log is kept for diagnosing failed runs. Reports include exact times, workload settings, latency distributions, accepted and attempted messages, HTTP errors, WebSocket disconnect/reconnect counts, notifications, sync results, outbox backlog and resource samples.
 
 Remove only the isolated benchmark project and its database volume after preserving the JSON evidence:
 
 ```powershell
-.\infra\backend\load\run.ps1 -Scenario cleanup
+.\infra\scripts\windows\load\run.ps1 -Scenario cleanup
+```
+
+On Linux:
+
+```sh
+bash ./infra/scripts/linux/load/run.sh --scenario cleanup
 ```
 
 This command is scoped to the project and explicit benchmark Compose file above. Do not use the root `docker compose down -v` command as part of this benchmark.
