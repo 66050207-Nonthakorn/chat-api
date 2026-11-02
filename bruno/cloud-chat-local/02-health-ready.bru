@@ -1,0 +1,17 @@
+meta {
+  name: 02-health-ready
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/health/ready
+  body: none
+  auth: none
+}
+
+tests {
+  test("readiness returns 200", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+}

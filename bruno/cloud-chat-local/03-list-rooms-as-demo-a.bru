@@ -1,0 +1,23 @@
+meta {
+  name: 03-list-rooms-as-demo-a
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/api/v1/rooms
+  body: none
+  auth: none
+}
+
+headers {
+  X-Local-Test-User-ID: {{userAId}}
+}
+
+tests {
+  test("Demo A can list rooms", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().items).to.be.an("array");
+    expect(res.getBody().items.length).to.be.greaterThan(0);
+  });
+}

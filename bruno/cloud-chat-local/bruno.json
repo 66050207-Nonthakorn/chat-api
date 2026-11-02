@@ -1,0 +1,9 @@
+{
+  "version": "1",
+  "name": "Cloud Chat Local API",
+  "type": "collection",
+  "ignore": [
+    ".git",
+    "node_modules"
+  ]
+}

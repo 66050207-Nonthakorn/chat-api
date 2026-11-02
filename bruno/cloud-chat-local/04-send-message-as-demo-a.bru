@@ -1,0 +1,31 @@
+meta {
+  name: 04-send-message-as-demo-a
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/api/v1/rooms/{{groupRoomId}}/messages
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+  X-Local-Test-User-ID: {{userAId}}
+}
+
+body:json {
+  {
+    "client_message_id": "{{clientMessageId}}",
+    "text": "Hello from the Bruno local collection"
+  }
+}
+
+tests {
+  test("message is persisted", function () {
+    expect([200, 201]).to.include(res.getStatus());
+    expect(res.getBody().message.text).to.equal("Hello from the Bruno local collection");
+    expect(res.getBody().message.client_message_id).to.equal("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+  });
+}

@@ -1,0 +1,17 @@
+meta {
+  name: 01-health-live
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/health/live
+  body: none
+  auth: none
+}
+
+tests {
+  test("liveness returns 200", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+}

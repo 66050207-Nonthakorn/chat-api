@@ -1,0 +1,28 @@
+meta {
+  name: 08-websocket-subscribe-demo-group
+  type: ws
+  seq: 8
+}
+
+ws {
+  url: {{wsUrl}}
+  body: ws
+  auth: inherit
+}
+
+headers {
+  Origin: {{origin}}
+  Sec-WebSocket-Protocol: chat.v1
+  X-Local-Test-User-ID: {{userAId}}
+}
+
+body:ws {
+  name: subscribe-to-demo-group
+  content: '''
+    {
+      "type": "subscribe",
+      "request_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "room_id": "33333333-3333-4333-8333-333333333333"
+    }
+  '''
+}

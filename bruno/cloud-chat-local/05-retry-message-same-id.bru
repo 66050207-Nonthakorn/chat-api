@@ -1,0 +1,30 @@
+meta {
+  name: 05-retry-message-same-id
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/api/v1/rooms/{{groupRoomId}}/messages
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+  X-Local-Test-User-ID: {{userAId}}
+}
+
+body:json {
+  {
+    "client_message_id": "{{clientMessageId}}",
+    "text": "Hello from the Bruno local collection"
+  }
+}
+
+tests {
+  test("same idempotency key replays the message", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().replayed).to.equal(true);
+  });
+}
