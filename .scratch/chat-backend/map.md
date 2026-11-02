@@ -17,6 +17,7 @@
 - [07: Backend release and operations](issues/07-backend-release-and-operations.md) — resolved; local CI/build, controlled migration, bounded drain, and telemetry.
 - [08: Backend load and recovery evidence](issues/08-backend-load-and-recovery-evidence.md) — resolved; local benchmark and failure drills with AWS capacity checks unverified.
 - [09: Shared API and WebSocket rate limits](issues/09-shared-rate-limiting.md) — resolved; cross-replica HTTP and WebSocket token buckets use Valkey and fail closed.
+- [10: Shared persisted-session rules](issues/10-shared-session-rules.md) — claimed; centralize session eligibility and atomic idle renewal across HTTP and WebSocket.
 
 ## Fog
 
