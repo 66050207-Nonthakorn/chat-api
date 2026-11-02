@@ -20,4 +20,3 @@
 Implemented in `fb48976` and merged into `integration`. `internal/auth.SessionRules` now owns persisted-session eligibility, atomic idle renewal capped at absolute expiry, cookie-session loading, and the 5-second database query bound; `cmd/api` shares one value between auth and realtime. Existing transport mappings, local test identity, row locks, and refresh coordination remain in their established paths.
 
 Verification passed against the local PostgreSQL/Valkey Compose services: focused SessionRules PostgreSQL tests; `go test -count=1 ./...`; `go test -race -count=1 ./...`; `go vet ./...`; and `go build ./cmd/...`. No live AWS or Cognito checks were run.
-
