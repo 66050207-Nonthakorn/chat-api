@@ -125,7 +125,8 @@ func TestWebSocketSubscribeAcknowledgesBeforeCrossReplicaDelivery(t *testing.T) 
 func TestProductionRealtimeServerRequiresSharedRateLimiter(t *testing.T) {
 	env := newRateLimitedWebSocketTestEnv(t, realtime.Options{})
 	productionConfig := config.Config{Environment: config.EnvironmentProduction}
-	server, err := realtime.NewServer(context.Background(), env.pool, env.valkey, productionConfig, realtime.Options{})
+	sessionRules := auth.NewSessionRules(env.pool)
+	server, err := realtime.NewServer(context.Background(), env.pool, env.valkey, productionConfig, sessionRules, realtime.Options{})
 	if err == nil {
 		server.Close()
 		t.Fatal("production realtime server started without a shared rate limiter")
@@ -371,11 +372,12 @@ func newWebSocketTestEnvWithRateLimit(t *testing.T, options realtime.Options, en
 	primaryServerOptions.RateLimiter = primaryLimiter
 	replicaServerOptions := options
 	replicaServerOptions.RateLimiter = replicaLimiter
-	primaryHub, err := realtime.NewServer(context.Background(), test.pool, valkey, cfg, primaryServerOptions)
+	sessionRules := auth.NewSessionRules(test.pool)
+	primaryHub, err := realtime.NewServer(context.Background(), test.pool, valkey, cfg, sessionRules, primaryServerOptions)
 	if err != nil {
 		t.Fatalf("start primary WebSocket subscriber: %v", err)
 	}
-	replicaHub, err := realtime.NewServer(context.Background(), test.pool, valkey, cfg, replicaServerOptions)
+	replicaHub, err := realtime.NewServer(context.Background(), test.pool, valkey, cfg, sessionRules, replicaServerOptions)
 	if err != nil {
 		primaryHub.Close()
 		t.Fatalf("start second WebSocket subscriber: %v", err)

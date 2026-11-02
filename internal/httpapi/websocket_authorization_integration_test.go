@@ -62,7 +62,8 @@ func TestWebSocketShutdownClosesClientWithGoingAwayAndRejectsNewConnections(t *t
 		EnableLocalTestIdentity: true,
 		CursorHMACKey:           "test-only-room-cursor-signing-key-0123456789",
 	}
-	hub, err := realtime.NewServer(context.Background(), env.pool, env.valkey, cfg, realtime.Options{})
+	sessionRules := auth.NewSessionRules(env.pool)
+	hub, err := realtime.NewServer(context.Background(), env.pool, env.valkey, cfg, sessionRules, realtime.Options{})
 	if err != nil {
 		t.Fatalf("start shutdown-test WebSocket hub: %v", err)
 	}
@@ -380,7 +381,8 @@ func newSessionSocketServer(t *testing.T, env *webSocketTestEnv, userID, session
 		EnableLocalTestIdentity: true,
 		CursorHMACKey:           "test-only-room-cursor-signing-key-0123456789",
 	}
-	hub, err := realtime.NewServer(context.Background(), env.pool, env.valkey, cfg, options)
+	sessionRules := auth.NewSessionRules(env.pool)
+	hub, err := realtime.NewServer(context.Background(), env.pool, env.valkey, cfg, sessionRules, options)
 	if err != nil {
 		t.Fatalf("start session test WebSocket subscriber: %v", err)
 	}

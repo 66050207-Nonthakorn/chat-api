@@ -55,14 +55,15 @@ type Options struct {
 // to sockets on this API replica. Each instance owns one environment channel
 // subscription regardless of the number of connected sockets.
 type Server struct {
-	ctx     context.Context
-	cancel  context.CancelFunc
-	pool    *pgxpool.Pool
-	channel string
-	config  config.Config
-	options Options
-	logger  *slog.Logger
-	pubsub  *redis.PubSub
+	ctx          context.Context
+	cancel       context.CancelFunc
+	pool         *pgxpool.Pool
+	sessionRules auth.SessionRules
+	channel      string
+	config       config.Config
+	options      Options
+	logger       *slog.Logger
+	pubsub       *redis.PubSub
 
 	mu           sync.RWMutex
 	sockets      map[*socket]struct{}
@@ -75,7 +76,7 @@ type Server struct {
 
 // NewServer subscribes to the environment's Valkey channel before returning,
 // so callers can safely start serving WebSocket handshakes afterward.
-func NewServer(parent context.Context, pool *pgxpool.Pool, valkey redis.UniversalClient, cfg config.Config, options Options) (*Server, error) {
+func NewServer(parent context.Context, pool *pgxpool.Pool, valkey redis.UniversalClient, cfg config.Config, sessionRules auth.SessionRules, options Options) (*Server, error) {
 	if parent == nil {
 		parent = context.Background()
 	}
@@ -104,6 +105,7 @@ func NewServer(parent context.Context, pool *pgxpool.Pool, valkey redis.Universa
 		ctx:          ctx,
 		cancel:       cancel,
 		pool:         pool,
+		sessionRules: sessionRules,
 		channel:      channel,
 		config:       cfg,
 		options:      options,
@@ -414,13 +416,13 @@ func (s *Server) removeSocket(client *socket, closeCode websocket.StatusCode) {
 }
 
 func (s *Server) sessionValid(parent context.Context, principal auth.Principal) (bool, error) {
-	ctx, cancel := context.WithTimeout(parent, queryTimeout)
-	defer cancel()
-	var valid bool
 	if principal.SessionID == "" {
 		if s.config.Environment != config.EnvironmentLocal || !s.config.EnableLocalTestIdentity {
 			return false, nil
 		}
+		ctx, cancel := context.WithTimeout(parent, queryTimeout)
+		defer cancel()
+		var valid bool
 		err := s.pool.QueryRow(ctx, `
 			SELECT EXISTS (
 				SELECT 1 FROM app_users
@@ -428,23 +430,7 @@ func (s *Server) sessionValid(parent context.Context, principal auth.Principal) 
 			)`, principal.UserID).Scan(&valid)
 		return valid, err
 	}
-	if !uuid.IsCanonical(principal.SessionID) || !uuid.IsCanonical(principal.UserID) {
-		return false, nil
-	}
-	err := s.pool.QueryRow(ctx, `
-		SELECT EXISTS (
-			SELECT 1
-			FROM app_sessions sessions
-			JOIN app_users users ON users.user_id = sessions.user_id
-			WHERE sessions.session_id = $1::uuid
-			  AND sessions.user_id = $2::uuid
-			  AND sessions.revoked_at IS NULL
-			  AND sessions.expires_at > clock_timestamp()
-			  AND sessions.idle_expires_at > clock_timestamp()
-			  AND sessions.auth_epoch = users.auth_epoch
-			  AND users.is_active
-		)`, principal.SessionID, principal.UserID).Scan(&valid)
-	return valid, err
+	return s.sessionRules.Current(parent, principal)
 }
 
 func (s *Server) hasMembership(parent context.Context, roomID, userID string) (bool, error) {
@@ -646,30 +632,7 @@ func (s *Server) touchSessionIdle(parent context.Context, principal auth.Princip
 	if principal.SessionID == "" {
 		return s.sessionValid(parent, principal)
 	}
-	if !uuid.IsCanonical(principal.SessionID) || !uuid.IsCanonical(principal.UserID) {
-		return false, nil
-	}
-	ctx, cancel := context.WithTimeout(parent, queryTimeout)
-	defer cancel()
-	var sessionID string
-	err := s.pool.QueryRow(ctx, `
-		UPDATE app_sessions sessions
-		SET last_seen_at = clock_timestamp(),
-		    idle_expires_at = LEAST(sessions.expires_at, clock_timestamp() + interval '30 minutes')
-		FROM app_users users
-		WHERE sessions.session_id = $1::uuid
-		  AND sessions.user_id = $2::uuid
-		  AND sessions.user_id = users.user_id
-		  AND users.is_active
-		  AND sessions.auth_epoch = users.auth_epoch
-		  AND sessions.revoked_at IS NULL
-		  AND sessions.expires_at > clock_timestamp()
-		  AND sessions.idle_expires_at > clock_timestamp()
-		RETURNING sessions.session_id::text`, principal.SessionID, principal.UserID).Scan(&sessionID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
-	}
-	return err == nil, err
+	return s.sessionRules.TouchIdle(parent, principal)
 }
 
 func (c *socket) subscribe(requestID, roomID string, startedAt time.Time) bool {

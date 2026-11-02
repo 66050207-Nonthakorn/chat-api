@@ -42,10 +42,11 @@ func run() error {
 		return err
 	}
 	defer pool.Close()
+	sessionRules := auth.NewSessionRules(pool)
 
 	var authServer *auth.Server
 	if cfg.OIDCIssuer != "" {
-		authServer, err = auth.NewServer(ctx, cfg, pool)
+		authServer, err = auth.NewServer(ctx, cfg, pool, sessionRules)
 		if err != nil {
 			return err
 		}
@@ -61,7 +62,7 @@ func run() error {
 		return err
 	}
 
-	realtimeServer, err := realtime.NewServer(context.Background(), pool, valkey, cfg, realtime.Options{Logger: slog.Default(), RateLimiter: rateLimiter})
+	realtimeServer, err := realtime.NewServer(context.Background(), pool, valkey, cfg, sessionRules, realtime.Options{Logger: slog.Default(), RateLimiter: rateLimiter})
 	if err != nil {
 		return err
 	}

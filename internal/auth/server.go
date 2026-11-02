@@ -28,18 +28,18 @@ const (
 	productionLoginCookie   = "__Host-chat_login"
 	localSessionCookie      = "chat_session"
 	localLoginCookie        = "chat_login"
-	sessionIdleTimeout      = 30 * time.Minute
 	sessionAbsoluteTimeout  = 8 * time.Hour
 	loginAttemptTimeout     = 5 * time.Minute
 )
 
 type Server struct {
-	config   config.Config
-	pool     *pgxpool.Pool
-	oauth    oauth2.Config
-	verifier *oidc.IDTokenVerifier
-	keys     keyRing
-	client   *http.Client
+	config       config.Config
+	pool         *pgxpool.Pool
+	sessionRules SessionRules
+	oauth        oauth2.Config
+	verifier     *oidc.IDTokenVerifier
+	keys         keyRing
+	client       *http.Client
 }
 
 type tokenBundle struct {
@@ -64,9 +64,12 @@ type activeSessionKey struct{}
 
 // NewServer creates a backend OIDC client and shared PostgreSQL session service.
 // It performs issuer discovery during startup so an invalid issuer fails closed.
-func NewServer(ctx context.Context, cfg config.Config, pool *pgxpool.Pool) (*Server, error) {
+func NewServer(ctx context.Context, cfg config.Config, pool *pgxpool.Pool, sessionRules SessionRules) (*Server, error) {
 	if pool == nil {
 		return nil, errors.New("session database is required")
+	}
+	if sessionRules.pool != pool {
+		return nil, errors.New("session rules must use the auth database")
 	}
 	if cfg.Environment != config.EnvironmentLocal && cfg.Environment != config.EnvironmentProduction {
 		return nil, errors.New("APP_ENV must be local or production")
@@ -120,12 +123,13 @@ func NewServer(ctx context.Context, cfg config.Config, pool *pgxpool.Pool) (*Ser
 		Scopes: []string{oidc.ScopeOpenID, "profile"},
 	}
 	return &Server{
-		config:   cfg,
-		pool:     pool,
-		oauth:    oauthConfig,
-		verifier: verifier,
-		keys:     keys,
-		client:   client,
+		config:       cfg,
+		pool:         pool,
+		sessionRules: sessionRules,
+		oauth:        oauthConfig,
+		verifier:     verifier,
+		keys:         keys,
+		client:       client,
 	}, nil
 }
 
@@ -586,48 +590,24 @@ func lockCurrentSession(ctx context.Context, tx pgx.Tx, session *activeSession) 
 }
 
 func (s *Server) authenticate(ctx context.Context, cookieValue string, refreshTokens bool) (*activeSession, error) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	ctx, cancel := s.sessionRules.contextWithTimeout(ctx)
 	defer cancel()
-	tokenHash := sha256.Sum256([]byte(cookieValue))
-	var session activeSession
-	var csrfHash []byte
-	err := s.pool.QueryRow(ctx, `
-		UPDATE app_sessions sessions
-		SET last_seen_at = clock_timestamp(),
-		    idle_expires_at = LEAST(sessions.expires_at, clock_timestamp() + $2 * interval '1 second')
-		FROM app_users users
-		WHERE sessions.token_hash = $1
-		  AND sessions.user_id = users.user_id
-		  AND users.is_active
-		  AND sessions.auth_epoch = users.auth_epoch
-		  AND sessions.revoked_at IS NULL
-		  AND sessions.expires_at > clock_timestamp()
-		  AND sessions.idle_expires_at > clock_timestamp()
-		RETURNING sessions.session_id::text, sessions.user_id::text, users.display_name,
-		          sessions.csrf_token_hash, sessions.tokens_ciphertext, sessions.encryption_key_id,
-		          sessions.expires_at, sessions.idle_expires_at, sessions.token_expires_at,
-		          sessions.refresh_generation, sessions.identity_id::text`,
-		tokenHash[:], int64(sessionIdleTimeout.Seconds())).Scan(
-		&session.principal.SessionID, &session.principal.UserID, &session.principal.DisplayName,
-		&csrfHash, &session.tokensCiphertext, &session.encryptionKeyID,
-		&session.expiresAt, &session.idleExpiresAt, &session.tokenExpiresAt,
-		&session.refreshGeneration, &session.identityID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
-	}
+	session, err := s.sessionRules.authenticateCookie(ctx, cookieValue)
 	if err != nil {
 		return nil, err
 	}
-	session.csrfTokenHash = csrfHash
+	if session == nil {
+		return nil, nil
+	}
 	if refreshTokens {
-		if err := s.refreshIfNeeded(ctx, &session); err != nil {
+		if err := s.refreshIfNeeded(ctx, session); err != nil {
 			if errors.Is(err, errSessionRevoked) || errors.Is(err, errSessionExpired) {
 				return nil, nil
 			}
 			return nil, err
 		}
 	}
-	return &session, nil
+	return session, nil
 }
 
 func (s *Server) revokePreviousCookie(ctx context.Context, r *http.Request) error {
