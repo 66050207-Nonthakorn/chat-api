@@ -9,6 +9,8 @@ import (
 
 	"cloudchat/internal/config"
 	"cloudchat/internal/db"
+	"cloudchat/internal/imagecleanup"
+	"cloudchat/internal/imagestore"
 	"cloudchat/internal/outbox"
 )
 
@@ -35,9 +37,14 @@ func run() error {
 		return err
 	}
 	defer func() { _ = valkey.Close() }()
+	imageStore, err := imagestore.Open(context.Background(), cfg)
+	if err != nil {
+		return err
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	go imagecleanup.Run(ctx, pool, imageStore)
 	worker := outbox.NewWorkerWithOptions(pool, valkey, cfg.Environment, outbox.WorkerOptions{
 		ShutdownGrace: cfg.ShutdownGrace,
 	})

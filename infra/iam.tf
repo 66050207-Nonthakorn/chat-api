@@ -37,8 +37,7 @@ resource "aws_iam_role" "task" {
   assume_role_policy   = data.aws_iam_policy_document.ecs_task_trust.json
   max_session_duration = 3600
 
-  # The application task role intentionally has no AWS permissions. Add an
-  # action only when application code gains a concrete AWS API requirement.
+  # Scoped media permissions are attached below to the API and worker roles.
 }
 
 data "aws_iam_policy_document" "execution" {
@@ -146,6 +145,33 @@ resource "aws_iam_role_policy" "execution_migration" {
   name   = "${local.name_prefix}-migration-execution"
   role   = aws_iam_role.execution_migration[0].id
   policy = data.aws_iam_policy_document.execution_migration.json
+}
+
+resource "aws_iam_role" "task_migration" {
+  count = var.migration_image_digest != "" ? 1 : 0
+
+  name                 = "${local.name_prefix}-migration-task"
+  assume_role_policy   = data.aws_iam_policy_document.ecs_task_trust.json
+  max_session_duration = 3600
+}
+
+data "aws_iam_policy_document" "media_task" {
+  for_each = local.service_settings
+
+  statement {
+    sid       = "UseOnlyMediaObjects"
+    effect    = "Allow"
+    actions   = each.key == "api" ? ["s3:GetObject", "s3:PutObject"] : ["s3:DeleteObject"]
+    resources = ["${aws_s3_bucket.media.arn}/images/*"]
+  }
+}
+
+resource "aws_iam_role_policy" "media_task" {
+  for_each = local.service_settings
+
+  name   = "${local.name_prefix}-${each.key}-media"
+  role   = aws_iam_role.task[each.key].id
+  policy = data.aws_iam_policy_document.media_task[each.key].json
 }
 
 resource "aws_iam_role_policy" "execution" {

@@ -11,7 +11,9 @@ import (
 
 	"cloudchat/internal/config"
 	"cloudchat/internal/message"
+	"cloudchat/internal/migrations"
 	"cloudchat/internal/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )
@@ -263,6 +265,7 @@ type claimedItem struct {
 	clientID   string
 	text       string
 	createdAt  time.Time
+	image      *message.Image
 }
 
 type itemOutcome uint8
@@ -289,6 +292,10 @@ func (w *Worker) claimBatch(ctx context.Context) ([]claimedItem, string, error) 
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
+	imageJoin, err := migrations.MessageImageJoin(ctx, tx)
+	if err != nil {
+		return nil, "", fmt.Errorf("check outbox schema: %w", err)
+	}
 	rows, err := tx.Query(ctx, `
 		WITH picked AS (
 			SELECT outbox_id
@@ -311,11 +318,12 @@ func (w *Worker) claimBatch(ctx context.Context) ([]claimedItem, string, error) 
 		)
 		SELECT claimed.outbox_id::text, claimed.message_id::text,
 		       claimed.event_type, claimed.schema_version, claimed.attempt_count,
-		       messages.room_id::text, messages.seq::text, messages.sender_user_id::text,
-		       messages.sender_display_name, messages.client_message_id::text,
-		       messages.text, messages.created_at
+		       m.room_id::text, m.seq::text, m.sender_user_id::text,
+		       m.sender_display_name, m.client_message_id::text,
+		       m.text, m.created_at, images.image_id::text,
+	       images.content_type, images.byte_size, images.width, images.height
 		FROM claimed
-		JOIN messages ON messages.message_id = claimed.message_id
+		JOIN messages m ON m.message_id = claimed.message_id `+imageJoin+`
 		ORDER BY claimed.outbox_id`,
 		w.options.BatchSize, token, w.options.LeaseDuration.Microseconds())
 	if err != nil {
@@ -324,13 +332,25 @@ func (w *Worker) claimBatch(ctx context.Context) ([]claimedItem, string, error) 
 	items := make([]claimedItem, 0, w.options.BatchSize)
 	for rows.Next() {
 		var item claimedItem
+		var imageID, contentType pgtype.Text
+		var byteSize, width, height pgtype.Int4
 		if err := rows.Scan(
 			&item.outboxID, &item.messageID, &item.eventType, &item.schema,
 			&item.attempt, &item.roomID, &item.sequence, &item.senderID,
 			&item.senderName, &item.clientID, &item.text, &item.createdAt,
+			&imageID, &contentType, &byteSize, &width, &height,
 		); err != nil {
 			rows.Close()
 			return nil, "", fmt.Errorf("read claimed outbox row: %w", err)
+		}
+		if imageID.Valid {
+			item.image = &message.Image{
+				URL:         "/api/v1/rooms/" + item.roomID + "/messages/" + item.messageID + "/image",
+				ContentType: contentType.String,
+				ByteSize:    int(byteSize.Int32),
+				Width:       int(width.Int32),
+				Height:      int(height.Int32),
+			}
 		}
 		items = append(items, item)
 	}
@@ -366,6 +386,7 @@ func (w *Worker) processItem(ctx context.Context, item claimedItem, token string
 			Sender:          message.Sender{UserID: item.senderID, DisplayName: item.senderName},
 			ClientMessageID: item.clientID,
 			Text:            item.text,
+			Image:           item.image,
 			CreatedAt:       item.createdAt.UTC().Format(time.RFC3339Nano),
 		},
 	})

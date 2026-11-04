@@ -13,6 +13,12 @@
 - [โครงสร้างพื้นฐาน AWS และการส่งมอบ](0003-aws-hosting-and-delivery.md)
 - [สถานะไคลเอนต์และขอบเขตฟีเจอร์ระยะถัดไป](0004-client-state-and-deferred-features.md)
 - [เดโมขั้นต่ำและการใช้เครดิต](0005-minimum-demo-and-credit-budget.md)
+- [รูปในข้อความเป็นเนื้อหาส่วนตัวที่ผ่านการปรับรูป](0006-private-normalized-image-messages.md)
+- [ส่งรูปพร้อมข้อความในคำขอเดียวและอ่านผ่าน API](0007-image-send-and-private-storage.md)
+
+ฟีเจอร์รูปภาพ: [คู่มือ flow/API/rollout](../image-messages.md) และ [spec](../../.scratch/image-messages/spec.md) — backend และ local integration ผ่านแล้ว มี [Bruno image flow](../../bruno/cloud-chat-local/README.md) พร้อม fixture; frontend และ AWS จริงยังแยกงาน
+
+- [สรุปแบบออกแบบรูปภาพใน Notion](https://www.notion.so/40e766880300818bb5ecf5fa73f0154c)
 
 ## เอกสารฉบับละเอียด
 

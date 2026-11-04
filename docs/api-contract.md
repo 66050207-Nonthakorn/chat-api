@@ -92,14 +92,17 @@ Logout หมายถึงออกจาก session ของแอป กา
 
 ## 4. HTTP endpoints
 
+ดูขั้นตอนส่ง/รับรูป, retry, runtime limits และ release ใน [คู่มือ image messages](image-messages.md) พร้อม [Bruno collection](../bruno/cloud-chat-local/README.md)
+
 ทุก endpoint ในส่วนนี้ต้องมี session; POST ต้องมี CSRF เพิ่มด้วย
 
 | Method / path | หน้าที่ | ผลสำเร็จ |
 | --- | --- | --- |
 | `GET /api/v1/rooms?limit=50&cursor=…` | ห้องที่ผู้ใช้เป็นสมาชิกปัจจุบัน | 200 `{items: Room[], next_cursor: string หรือ null}` |
-| `POST /api/v1/rooms/{room_id}/messages` | บันทึกข้อความพร้อม outbox | 201 เมื่อสร้างใหม่, 200 เมื่อ replay |
+| `POST /api/v1/rooms/{room_id}/messages` | บันทึกข้อความพร้อม outbox; JSON สำหรับข้อความ และ multipart สำหรับรูป | 201 เมื่อสร้างใหม่, 200 เมื่อ replay |
 | `GET /api/v1/rooms/{room_id}/messages?limit=50&before_seq=…` | ประวัติจากใหม่ไปเก่า | 200 ตามรูปแบบด้านล่าง |
 | `GET /api/v1/rooms/{room_id}/sync?after_seq=0&limit=100&through_seq=…` | ดึงช่วงที่พลาดจากเก่าไปใหม่ | 200 ตามรูปแบบด้านล่าง |
+| `GET /api/v1/rooms/{room_id}/messages/{message_id}/image` | อ่านรูปผ่าน API หลังตรวจสมาชิกปัจจุบัน | 200 รูปที่ผ่านการประมวลผล |
 
 ห้องไม่มีอยู่หรือผู้ใช้ไม่เป็นสมาชิกตอบ 404 แบบเดียวกันเพื่อไม่เปิดเผยว่าห้องมีอยู่ ส่วน role/การจัดการสมาชิกยังไม่มี endpoint ในเดโม; การทดสอบลบสมาชิกใช้ fixture/admin script ที่ควบคุมสิทธิ์
 
@@ -136,6 +139,14 @@ X-CSRF-Token: opaque-session-bound-value
 7. transaction rollback ต้องไม่มีทั้ง message และ outbox; ถ้าผล commit ไม่แน่นอนให้ตอบข้อผิดพลาด/ตัดการเชื่อมต่อ ห้ามตอบสำเร็จโดยเดา client retry รหัสเดิม
 8. HTTP timeout, network error หรือ 5xx อาจเกิดหลัง commit จึงไม่แปลว่าข้อความไม่ถูกบันทึก
 9. รับ message.created ของตัวเองก่อน HTTP ได้: รวมกับ pending ผ่าน sender_user_id + room_id + client_message_id แล้วตัดซ้ำด้วย message_id ข้อความสดจาก server เป็นหลักฐานของข้อความที่ commit แล้ว แต่ไม่ใช่หลักฐานว่าผู้รับอ่านแล้ว
+
+สำหรับรูป ส่ง `multipart/form-data` ไปยัง path เดิม โดยมี `client_message_id`, `image` หนึ่งไฟล์ และ `text` ซึ่งไม่บังคับ (caption ว่างได้) รูปต้นทางรับ JPEG, PNG หรือ WebP ไม่เกิน 5 MiB; request รวมไม่เกิน 6 MiB Backend ตรวจชนิดจริงและส่งกลับเฉพาะรูปที่ปรับ orientation, ลดด้านยาวไม่เกิน 2,560 px และ encode ใหม่เพื่อตัด metadata รูปที่ส่งแล้วมี `image` เพิ่มใน Message: `{ "url": "/api/v1/rooms/{room_id}/messages/{message_id}/image", "content_type": "image/jpeg หรือ image/png", "byte_size": 1234, "width": 800, "height": 600 }` URL นี้เป็น route ที่ต้องมี session และเป็นสมาชิกห้องขณะอ่าน; response ไม่เปิดเผย object key, ส่ง `Cache-Control: no-store` และ `X-Content-Type-Options: nosniff`
+
+ใน production `IMAGE_MESSAGES_ENABLED` ปิดไว้จน API และ worker รุ่นที่รองรับ image metadata deploy ครบแล้ว จากนั้นเปิดผ่าน Terraform `enable_image_messages` แยกหลัง rollout
+
+Upload ใช้เวลาได้สูงสุด 45 วินาทีและมี read deadline จริง; API task รับ image pipeline พร้อมกันหนึ่งคำขอ หากเต็มตอบ 429 `IMAGE_UPLOAD_BUSY` พร้อม `Retry-After: 1` โดยไม่รอคิว เมื่ออ่าน body หมดเวลาตอบ 408 `UPLOAD_TIMEOUT` ให้ retry ด้วย client_message_id เดิม Download ตรวจสิทธิ์และขนาด object ก่อน stream โดยจำกัดเวลา 10 วินาที; หากขาดกลางทางให้ retry เฉพาะ GET รูป ไม่สร้างข้อความใหม่
+
+การ replay รูปใช้ client_message_id เดิมได้เมื่อ caption และ fingerprint ของไฟล์ต้นทางตรงกัน; เนื้อหาที่ต่างกันตอบ 409 `IDEMPOTENCY_CONFLICT` เช่นเดียวกับข้อความ การอ่านประวัติ, sync และ `message.created` ใช้ Message รูปแบบเดียวกัน โดยส่ง metadata และ URL เท่านั้น ไม่ส่ง binary ผ่าน WebSocket
 
 คำตอบสำเร็จหมายถึงบันทึกในฐานข้อมูลแล้วเท่านั้น ไม่มีสถานะ delivered/read ใน v1
 

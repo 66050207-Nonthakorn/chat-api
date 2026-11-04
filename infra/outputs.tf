@@ -28,8 +28,13 @@ output "valkey_tls_endpoint" {
   value       = aws_elasticache_replication_group.valkey.primary_endpoint_address
 }
 
+output "media_bucket_name" {
+  description = "Private bucket containing processed chat images."
+  value       = aws_s3_bucket.media.id
+}
+
 output "task_role_arns" {
-  description = "Application task roles; intentionally have no AWS permissions."
+  description = "Application task roles, with API and worker media-object permissions."
   value       = { for service, role in aws_iam_role.task : service => role.arn }
 }
 

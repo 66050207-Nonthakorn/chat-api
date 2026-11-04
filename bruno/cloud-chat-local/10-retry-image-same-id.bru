@@ -1,0 +1,29 @@
+meta {
+  name: 10-retry-image-same-id
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/api/v1/rooms/{{groupRoomId}}/messages
+  body: multipartForm
+  auth: none
+}
+
+headers {
+  X-Local-Test-User-ID: {{userAId}}
+}
+
+body:multipart-form {
+  client_message_id: {{imageClientMessageId}}
+  text: {{imageCaption}}
+  image: @file(fixtures/image.png)
+}
+
+tests {
+  test("same image and caption replay", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().replayed).to.equal(true);
+    expect(res.getBody().message.message_id).to.equal(bru.getVar("sentImageMessageId"));
+  });
+}

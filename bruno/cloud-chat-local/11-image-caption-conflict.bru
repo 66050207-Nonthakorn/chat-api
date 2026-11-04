@@ -1,0 +1,28 @@
+meta {
+  name: 11-image-caption-conflict
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{baseUrl}}/api/v1/rooms/{{groupRoomId}}/messages
+  body: multipartForm
+  auth: none
+}
+
+headers {
+  X-Local-Test-User-ID: {{userAId}}
+}
+
+body:multipart-form {
+  client_message_id: {{imageClientMessageId}}
+  text: Changed caption for conflict
+  image: @file(fixtures/image.png)
+}
+
+tests {
+  test("changed caption conflicts", function () {
+    expect(res.getStatus()).to.equal(409);
+    expect(res.getBody().error.code).to.equal("IDEMPOTENCY_CONFLICT");
+  });
+}

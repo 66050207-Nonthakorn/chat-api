@@ -1,0 +1,24 @@
+meta {
+  name: 15-sync-includes-image
+  type: http
+  seq: 15
+}
+
+get {
+  url: {{baseUrl}}/api/v1/rooms/{{groupRoomId}}/sync?after_seq={{imageBeforeSeq}}&limit=200
+  body: none
+  auth: none
+}
+
+headers {
+  X-Local-Test-User-ID: {{userBId}}
+}
+
+
+
+tests {
+  test("sync retains image metadata", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().items.some(m => m.image && m.image.url === bru.getVar("sentImageUrl"))).to.equal(true);
+  });
+}

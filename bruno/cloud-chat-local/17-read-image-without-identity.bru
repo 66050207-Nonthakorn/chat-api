@@ -1,0 +1,20 @@
+meta {
+  name: 17-read-image-without-identity
+  type: http
+  seq: 17
+}
+
+get {
+  url: {{baseUrl}}{{sentImageUrl}}
+  body: none
+  auth: none
+}
+
+
+
+
+tests {
+  test("image requires authentication", function () {
+    expect(res.getStatus()).to.equal(401);
+  });
+}

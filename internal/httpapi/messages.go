@@ -16,17 +16,22 @@ import (
 	"cloudchat/internal/auth"
 	"cloudchat/internal/httpjson"
 	chatmessage "cloudchat/internal/message"
+	"cloudchat/internal/migrations"
 	"cloudchat/internal/strictjson"
 	"cloudchat/internal/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const maxMessageRequestBytes = 16 * 1024
 
-const memberMessagesQuery = `
+const messageSelect = `
 	SELECT m.message_id::text, m.room_id::text, m.seq::text, m.sender_user_id::text,
-	       m.sender_display_name, m.client_message_id::text, m.text, m.created_at
-	FROM messages m
+	       m.sender_display_name, m.client_message_id::text, m.text, m.created_at,
+	       images.image_id::text, images.content_type, images.byte_size, images.width, images.height
+	FROM messages m `
+
+const memberMessagesFilter = `
 	JOIN room_memberships rm ON rm.room_id = m.room_id AND rm.user_id = $2::uuid
 	WHERE m.room_id = $1::uuid`
 
@@ -39,6 +44,10 @@ func (h *handler) sendMessage(w http.ResponseWriter, r *http.Request, roomID str
 	principal, ok := auth.PrincipalFromContext(r.Context())
 	if !ok {
 		writeError(w, r, http.StatusUnauthorized, "UNAUTHENTICATED", "Authentication required", false, nil)
+		return
+	}
+	if mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err == nil && mediaType == "multipart/form-data" {
+		h.sendImageMessage(w, r, roomID, principal)
 		return
 	}
 	if contentType := r.Header.Get("Content-Type"); contentType == "" {
@@ -122,15 +131,17 @@ func (h *handler) sendMessage(w http.ResponseWriter, r *http.Request, roomID str
 		return
 	}
 
-	existing, err := scanMessage(transaction.QueryRow(ctx, `
-		SELECT message_id::text, room_id::text, seq::text, sender_user_id::text,
-		       sender_display_name, client_message_id::text, text, created_at
-		FROM messages
-		WHERE sender_user_id = $1::uuid AND room_id = $2::uuid AND client_message_id = $3::uuid`,
+	imageJoin, err := migrations.MessageImageJoin(ctx, transaction)
+	if err != nil {
+		dependencyUnavailable(w, r)
+		return
+	}
+	existing, err := scanMemberMessage(transaction.QueryRow(ctx, messageSelect+imageJoin+`
+		WHERE m.sender_user_id = $1::uuid AND m.room_id = $2::uuid AND m.client_message_id = $3::uuid`,
 		principal.UserID, roomID, request.ClientMessageID))
 	if err == nil {
-		if existing.Text != request.Text {
-			writeError(w, r, http.StatusConflict, "IDEMPOTENCY_CONFLICT", "Request key already used with different text", false, nil)
+		if existing.Text != request.Text || existing.Image != nil {
+			writeError(w, r, http.StatusConflict, "IDEMPOTENCY_CONFLICT", "Request key already used with different content", false, nil)
 			return
 		}
 		if err := transaction.Commit(ctx); err != nil {
@@ -253,6 +264,34 @@ func scanMessage(row interface{ Scan(...any) error }) (chatmessage.Message, erro
 	return result, nil
 }
 
+func scanMemberMessage(row interface{ Scan(...any) error }) (chatmessage.Message, error) {
+	var result chatmessage.Message
+	var senderID string
+	var createdAt time.Time
+	var imageID, contentType pgtype.Text
+	var byteSize, width, height pgtype.Int4
+	err := row.Scan(
+		&result.MessageID, &result.RoomID, &result.Seq, &senderID,
+		&result.Sender.DisplayName, &result.ClientMessageID, &result.Text, &createdAt,
+		&imageID, &contentType, &byteSize, &width, &height,
+	)
+	if err != nil {
+		return chatmessage.Message{}, err
+	}
+	result.Sender.UserID = senderID
+	result.CreatedAt = createdAt.UTC().Format(time.RFC3339Nano)
+	if imageID.Valid {
+		result.Image = &chatmessage.Image{
+			URL:         "/api/v1/rooms/" + result.RoomID + "/messages/" + result.MessageID + "/image",
+			ContentType: contentType.String,
+			ByteSize:    int(byteSize.Int32),
+			Width:       int(width.Int32),
+			Height:      int(height.Int32),
+		}
+	}
+	return result, nil
+}
+
 func parseDecimalSequence(value string) (int64, error) {
 	if value == "" || (len(value) > 1 && value[0] == '0') {
 		return 0, errors.New("invalid decimal sequence")
@@ -320,7 +359,12 @@ func (h *handler) messageHistory(w http.ResponseWriter, r *http.Request, roomID 
 		writeRoomNotFound(w, r)
 		return
 	}
-	rows, err := h.pool.Query(ctx, memberMessagesQuery+`
+	imageJoin, err := migrations.MessageImageJoin(ctx, h.pool)
+	if err != nil {
+		dependencyUnavailable(w, r)
+		return
+	}
+	rows, err := h.pool.Query(ctx, messageSelect+imageJoin+memberMessagesFilter+`
 		AND ($3::bigint IS NULL OR m.seq < $3::bigint)
 		ORDER BY m.seq DESC
 		LIMIT $4`, roomID, principal.UserID, beforeSeq, limit+1)
@@ -331,7 +375,7 @@ func (h *handler) messageHistory(w http.ResponseWriter, r *http.Request, roomID 
 	defer rows.Close()
 	items := make([]chatmessage.Message, 0, limit+1)
 	for rows.Next() {
-		item, err := scanMessage(rows)
+		item, err := scanMemberMessage(rows)
 		if err != nil {
 			dependencyUnavailable(w, r)
 			return
@@ -415,7 +459,12 @@ func (h *handler) syncMessages(w http.ResponseWriter, r *http.Request, roomID st
 		invalidSequenceQuery(w, r, "after_seq")
 		return
 	}
-	rows, err := h.pool.Query(ctx, memberMessagesQuery+`
+	imageJoin, err := migrations.MessageImageJoin(ctx, h.pool)
+	if err != nil {
+		dependencyUnavailable(w, r)
+		return
+	}
+	rows, err := h.pool.Query(ctx, messageSelect+imageJoin+memberMessagesFilter+`
 		AND m.seq > $3::bigint AND m.seq <= $4::bigint
 		ORDER BY m.seq ASC
 		LIMIT $5`, roomID, principal.UserID, afterSeq, throughSeq, limit+1)
@@ -427,7 +476,7 @@ func (h *handler) syncMessages(w http.ResponseWriter, r *http.Request, roomID st
 	items := make([]chatmessage.Message, 0, limit+1)
 	expected := afterSeq + 1
 	for rows.Next() {
-		item, err := scanMessage(rows)
+		item, err := scanMemberMessage(rows)
 		if err != nil {
 			dependencyUnavailable(w, r)
 			return

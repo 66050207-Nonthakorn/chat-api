@@ -34,6 +34,12 @@ type Config struct {
 	OIDCRedirectURL               string
 	SessionEncryptionCurrentKeyID string
 	SessionEncryptionKeys         map[string][]byte
+	ImageRegion                   string
+	ImageBucket                   string
+	ImageEndpoint                 string
+	ImageAccessKey                string
+	ImageSecretKey                string
+	ImageMessagesEnabled          bool
 	ShutdownGrace                 time.Duration
 }
 
@@ -95,6 +101,21 @@ func load(apiProcess bool) (Config, error) {
 
 	cfg.DatabaseURL = strings.TrimSpace(os.Getenv("DATABASE_URL"))
 	cfg.ValkeyURL = strings.TrimSpace(os.Getenv("VALKEY_URL"))
+	cfg.ImageRegion = strings.TrimSpace(os.Getenv("AWS_REGION"))
+	cfg.ImageBucket = strings.TrimSpace(os.Getenv("IMAGE_BUCKET"))
+	cfg.ImageEndpoint = strings.TrimSpace(os.Getenv("IMAGE_ENDPOINT"))
+	cfg.ImageAccessKey = strings.TrimSpace(os.Getenv("IMAGE_ACCESS_KEY"))
+	cfg.ImageSecretKey = strings.TrimSpace(os.Getenv("IMAGE_SECRET_KEY"))
+	enableImageMessages := strings.TrimSpace(os.Getenv("IMAGE_MESSAGES_ENABLED"))
+	if enableImageMessages == "" {
+		cfg.ImageMessagesEnabled = cfg.Environment == EnvironmentLocal
+	} else {
+		enabled, err := strconv.ParseBool(enableImageMessages)
+		if err != nil {
+			return Config{}, fmt.Errorf("IMAGE_MESSAGES_ENABLED must be a boolean")
+		}
+		cfg.ImageMessagesEnabled = enabled
+	}
 	if cfg.Environment == EnvironmentLocal {
 		if cfg.DatabaseURL == "" {
 			cfg.DatabaseURL = "postgres://chat:chat@localhost:5432/chat?sslmode=disable"
@@ -102,12 +123,33 @@ func load(apiProcess bool) (Config, error) {
 		if cfg.ValkeyURL == "" {
 			cfg.ValkeyURL = "redis://localhost:6379/0"
 		}
+		if cfg.ImageRegion == "" {
+			cfg.ImageRegion = "us-east-1"
+		}
+		if cfg.ImageBucket == "" {
+			cfg.ImageBucket = "cloudchat-images"
+		}
+		if cfg.ImageEndpoint == "" {
+			cfg.ImageEndpoint = "http://localhost:8333"
+		}
+		if cfg.ImageAccessKey == "" {
+			cfg.ImageAccessKey = "admin"
+		}
+		if cfg.ImageSecretKey == "" {
+			cfg.ImageSecretKey = "secret"
+		}
 	} else {
 		if cfg.DatabaseURL == "" {
 			return Config{}, fmt.Errorf("DATABASE_URL is required in production")
 		}
 		if cfg.ValkeyURL == "" {
 			return Config{}, fmt.Errorf("VALKEY_URL is required in production")
+		}
+		if cfg.ImageRegion == "" || cfg.ImageBucket == "" {
+			return Config{}, fmt.Errorf("AWS_REGION and IMAGE_BUCKET are required in production")
+		}
+		if cfg.ImageEndpoint != "" || cfg.ImageAccessKey != "" || cfg.ImageSecretKey != "" {
+			return Config{}, fmt.Errorf("IMAGE_ENDPOINT and static image credentials are available only in local development")
 		}
 	}
 	if apiProcess {

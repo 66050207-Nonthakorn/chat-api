@@ -11,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const CurrentVersion = 1
+const CurrentVersion = 2
 
 const advisoryLockKey int64 = 1380207954
 
@@ -50,28 +50,30 @@ func Up(ctx context.Context, pool *pgxpool.Pool) error {
 	if currentVersion > CurrentVersion {
 		return fmt.Errorf("database schema version %d is newer than this backend supports", currentVersion)
 	}
-	if currentVersion == CurrentVersion {
-		return nil
-	}
-
-	migration, err := fs.ReadFile(migrationFiles, "sql/0001_initial.sql")
-	if err != nil {
-		return fmt.Errorf("could not read initial migration")
-	}
-	transaction, err := connection.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("could not begin migration transaction")
-	}
-	defer func() { _ = transaction.Rollback(context.Background()) }()
-
-	if _, err = transaction.Exec(ctx, string(migration), pgx.QueryExecModeSimpleProtocol); err != nil {
-		return fmt.Errorf("initial migration failed")
-	}
-	if _, err = transaction.Exec(ctx, "INSERT INTO schema_migrations(version) VALUES ($1)", CurrentVersion); err != nil {
-		return fmt.Errorf("could not record initial migration")
-	}
-	if err = transaction.Commit(ctx); err != nil {
-		return fmt.Errorf("could not commit initial migration")
+	for version := currentVersion + 1; version <= CurrentVersion; version++ {
+		matches, err := fs.Glob(migrationFiles, fmt.Sprintf("sql/%04d_*.sql", version))
+		if err != nil || len(matches) != 1 {
+			return fmt.Errorf("could not find migration %04d", version)
+		}
+		migration, err := fs.ReadFile(migrationFiles, matches[0])
+		if err != nil {
+			return fmt.Errorf("could not read migration %04d", version)
+		}
+		transaction, err := connection.Begin(ctx)
+		if err != nil {
+			return fmt.Errorf("could not begin migration %04d", version)
+		}
+		if _, err = transaction.Exec(ctx, string(migration), pgx.QueryExecModeSimpleProtocol); err != nil {
+			_ = transaction.Rollback(context.Background())
+			return fmt.Errorf("migration %04d failed", version)
+		}
+		if _, err = transaction.Exec(ctx, "INSERT INTO schema_migrations(version) VALUES ($1)", version); err != nil {
+			_ = transaction.Rollback(context.Background())
+			return fmt.Errorf("could not record migration %04d", version)
+		}
+		if err := transaction.Commit(ctx); err != nil {
+			return fmt.Errorf("could not commit migration %04d", version)
+		}
 	}
 	return nil
 }

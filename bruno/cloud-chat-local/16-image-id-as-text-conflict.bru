@@ -1,0 +1,27 @@
+meta {
+  name: 16-image-id-as-text-conflict
+  type: http
+  seq: 16
+}
+
+post {
+  url: {{baseUrl}}/api/v1/rooms/{{groupRoomId}}/messages
+  body: json
+  auth: none
+}
+
+headers {
+  X-Local-Test-User-ID: {{userAId}}
+  Content-Type: application/json
+}
+
+body:json {
+  {"client_message_id":"{{imageClientMessageId}}","text":"{{imageCaption}}"}
+}
+
+tests {
+  test("image key cannot become text-only", function () {
+    expect(res.getStatus()).to.equal(409);
+    expect(res.getBody().error.code).to.equal("IDEMPOTENCY_CONFLICT");
+  });
+}

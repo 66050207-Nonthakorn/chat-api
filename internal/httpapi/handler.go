@@ -15,6 +15,7 @@ import (
 	"cloudchat/internal/auth"
 	"cloudchat/internal/config"
 	"cloudchat/internal/health"
+	"cloudchat/internal/imagestore"
 	"cloudchat/internal/ratelimit"
 	"cloudchat/internal/requestid"
 	"cloudchat/internal/uuid"
@@ -27,6 +28,7 @@ type handler struct {
 	websocket http.Handler
 	auth      *auth.Server
 	rateLimit *ratelimit.Limiter
+	images    imagestore.Store
 }
 
 // NewHandler wires the public HTTP API and health endpoints. Authentication
@@ -51,8 +53,12 @@ func NewHandlerWithAuth(cfg config.Config, pool *pgxpool.Pool, readiness health.
 // NewHandlerWithAuthAndRateLimiter wires the public API with shared Valkey
 // rate limiting. Production API startup must pass the limiter used by its
 // realtime server; constructors without it remain useful for isolated tests.
-func NewHandlerWithAuthAndRateLimiter(cfg config.Config, pool *pgxpool.Pool, readiness health.ReadinessCheck, websocketHandler http.Handler, authServer *auth.Server, limiter *ratelimit.Limiter) http.Handler {
-	api := &handler{config: cfg, pool: pool, websocket: websocketHandler, auth: authServer, rateLimit: limiter}
+func NewHandlerWithAuthAndRateLimiter(cfg config.Config, pool *pgxpool.Pool, readiness health.ReadinessCheck, websocketHandler http.Handler, authServer *auth.Server, limiter *ratelimit.Limiter, imageStores ...imagestore.Store) http.Handler {
+	var imageStorage imagestore.Store
+	if len(imageStores) > 0 {
+		imageStorage = imageStores[0]
+	}
+	api := &handler{config: cfg, pool: pool, websocket: websocketHandler, auth: authServer, rateLimit: limiter, images: imageStorage}
 	healthHandler := health.NewHandler(readiness)
 	root := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/health/live" || r.URL.Path == "/health/ready" {
@@ -220,6 +226,8 @@ func safeRouteName(path string) string {
 		return "auth.endpoint"
 	case path == "/api/v1/ws":
 		return "api.websocket"
+	case strings.Contains(path, "/messages/") && strings.HasSuffix(path, "/image"):
+		return "api.message.image"
 	case path == "/api/v1/rooms":
 		return "api.rooms"
 	case strings.HasPrefix(path, "/api/v1/rooms/") && strings.HasSuffix(path, "/sync"):
@@ -247,6 +255,18 @@ func dependencyUnavailable(w http.ResponseWriter, r *http.Request) {
 func (h *handler) serveRoom(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/v1/rooms/")
 	parts := strings.Split(path, "/")
+	if len(parts) == 4 && parts[1] == "messages" && parts[3] == "image" {
+		if !uuid.IsCanonical(parts[0]) || !uuid.IsCanonical(parts[2]) {
+			writeError(w, r, http.StatusNotFound, "NOT_FOUND", "Resource not found", false, nil)
+			return
+		}
+		if r.Method != http.MethodGet {
+			writeError(w, r, http.StatusMethodNotAllowed, "INVALID_REQUEST", "Method not allowed", false, nil)
+			return
+		}
+		h.readMessageImage(w, r, parts[0], parts[2])
+		return
+	}
 	if len(parts) != 2 || !uuid.IsCanonical(parts[0]) {
 		writeError(w, r, http.StatusNotFound, "ROOM_NOT_FOUND", "Room not found", false, nil)
 		return

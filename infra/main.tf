@@ -22,6 +22,64 @@ locals {
   }
 }
 
+resource "aws_s3_bucket" "media" {
+  bucket        = "${local.name_prefix}-media-${var.aws_account_id}"
+  force_destroy = false
+}
+
+resource "aws_s3_bucket_public_access_block" "media" {
+  bucket                  = aws_s3_bucket.media.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_ownership_controls" "media" {
+  bucket = aws_s3_bucket.media.id
+
+  rule {
+    object_ownership = "BucketOwnerEnforced"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "media" {
+  bucket = aws_s3_bucket.media.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_policy" "media_require_tls" {
+  bucket = aws_s3_bucket.media.id
+  policy = data.aws_iam_policy_document.media_require_tls.json
+
+  depends_on = [aws_s3_bucket_public_access_block.media]
+}
+
+data "aws_iam_policy_document" "media_require_tls" {
+  statement {
+    sid       = "DenyInsecureTransport"
+    effect    = "Deny"
+    actions   = ["s3:*"]
+    resources = [aws_s3_bucket.media.arn, "${aws_s3_bucket.media.arn}/*"]
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    condition {
+      test     = "Bool"
+      variable = "aws:SecureTransport"
+      values   = ["false"]
+    }
+  }
+}
+
 resource "aws_ecs_cluster" "backend" {
   name = "${local.name_prefix}-backend"
 }
@@ -281,7 +339,11 @@ resource "aws_ecs_task_definition" "service" {
       environment = concat([
         { name = "APP_ENV", value = "production" },
         { name = "SHUTDOWN_GRACE_SECONDS", value = tostring(var.shutdown_grace_seconds) },
+        { name = "AWS_REGION", value = var.aws_region },
+        { name = "IMAGE_BUCKET", value = aws_s3_bucket.media.id },
         ], each.key == "api" ? [
+        { name = "IMAGE_MESSAGES_ENABLED", value = tostring(var.enable_image_messages) },
+        ] : [], each.key == "api" ? [
         { name = "HTTP_ADDR", value = ":8080" },
         { name = "APP_ORIGIN", value = var.app_origin },
         { name = "OIDC_ISSUER", value = var.oidc_issuer },
@@ -333,7 +395,7 @@ resource "aws_ecs_task_definition" "migration" {
   network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
   execution_role_arn       = aws_iam_role.execution_migration[0].arn
-  task_role_arn            = aws_iam_role.task["api"].arn
+  task_role_arn            = aws_iam_role.task_migration[0].arn
 
   runtime_platform {
     operating_system_family = "LINUX"

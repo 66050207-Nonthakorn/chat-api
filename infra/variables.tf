@@ -106,6 +106,12 @@ variable "enable_ecs_services" {
   default     = false
 }
 
+variable "enable_image_messages" {
+  description = "Enable image sends only after every API and worker task runs an image-compatible release."
+  type        = bool
+  default     = false
+}
+
 variable "app_origin" {
   description = "Externally owned browser origin used for OIDC redirects and CSRF checks. Required when ECS services are enabled."
   type        = string

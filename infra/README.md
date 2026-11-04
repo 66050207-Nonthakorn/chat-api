@@ -1,6 +1,6 @@
 # AWS infrastructure
 
-This Terraform root manages backend-owned AWS resources only. It consumes a VPC, private subnets, the shared ALB security group, the API target group, and private-subnet egress from the platform/network owner. It does not create or change networking, ingress, frontend hosting, S3, CloudFront, or Cognito resources.
+This Terraform root manages backend-owned AWS resources only. It consumes a VPC, private subnets, the shared ALB security group, the API target group, and private-subnet egress from the platform/network owner. It creates a private backend media bucket for chat images. Networking, ingress, frontend hosting, CloudFront, and Cognito remain externally managed.
 
 ## Resources
 
@@ -8,7 +8,8 @@ This Terraform root manages backend-owned AWS resources only. It consumes a VPC,
 - An ECS cluster and optional Fargate API and worker services with fixed task counts, private ENIs, digest-pinned images, and rolling-deployment rollback.
 - Private, encrypted RDS PostgreSQL with managed master credentials, automated backups, PostgreSQL log exports, deletion protection, and final snapshots.
 - Private, encrypted, TLS-only node-based ElastiCache Valkey with an AUTH token sent through the provider's write-only argument.
-- Separate execution and application roles for the API and worker. Each service execution role can pull only its own ECR image and read only its own secrets. The optional migration task has a separate execution role scoped to the API image, migration log group, and `DATABASE_URL`. Application task roles have no AWS permissions.
+- Private backend S3 bucket for processed images with public access blocked, bucket-owner-enforced uploads, encryption, TLS-only access, and API/worker roles scoped to `images/*`.
+- Separate execution and application roles for the API and worker. Each service execution role can pull only its own ECR image and read only its own secrets. The optional migration task has separate execution and task roles; its execution role is scoped to the API image, migration log group, and `DATABASE_URL`, and its task role has no AWS permissions. The API task role can read/write only media objects; the worker can delete only media objects, both under `images/*` in the private media bucket.
 - Secrets Manager secret shells for database, Valkey, cursor signing, OIDC client secret, and session encryption keys. Terraform does not create secret versions or retain their values in state.
 - A one-off ECS migration task definition separate from the API and worker services. It uses the API image digest supplied through `migration_image_digest` and reads only `DATABASE_URL`.
 - Short-retention CloudWatch log groups, an ECS/RDS/Valkey and application dashboard, metric filters and alarms for request latency/errors, socket acknowledgement latency/errors, room sync, realtime broker failures, socket pressure, outbox age/retries, dependency health, and database pool pressure. Alerts are visible in CloudWatch; no notification destination is created here. OpenTelemetry trace export remains deferred until an SDK/exporter, collector, sampling, retention, and label limits are designed; this infrastructure does not claim trace coverage.
@@ -19,13 +20,16 @@ The RDS-managed master secret is separate from the application connection secret
 
 ### Runtime configuration and secrets
 
-The API loads browser/OIDC/session configuration, the worker loads only database and Valkey settings, and the migration task loads only `DATABASE_URL`:
+The API and worker load database, Valkey, and image-storage configuration; the API also loads browser/OIDC/session settings. The migration task loads only `DATABASE_URL`:
 
 | Environment value | Storage | Consumer | Required at startup | Notes |
 | --- | --- | --- | --- | --- |
 | `DATABASE_URL` | Secrets Manager | API, worker, migration | Yes | Least-privilege PostgreSQL application account. |
 | `VALKEY_URL` | Secrets Manager | API, worker | Yes | TLS `rediss://` URL with the matching AUTH token. |
 | `CURSOR_HMAC_KEY` | Secrets Manager | API | Yes | Random key of at least 32 bytes. |
+| `IMAGE_BUCKET` | Terraform environment | API, worker | Yes | Private media bucket created by this module; objects live under `images/`. |
+| `AWS_REGION` | ECS environment | API, worker | Yes | Task region for the AWS SDK; credentials come from each ECS task role. |
+| `IMAGE_MESSAGES_ENABLED` | Terraform environment | API | No (default false in production) | Enable only after every API and worker task runs an image-compatible release. |
 | `OIDC_CLIENT_SECRET` | Secrets Manager | API | Yes | Secret from the externally owned OIDC app client. |
 | `SESSION_ENCRYPTION_KEYS` | Secrets Manager | API | Yes | JSON key ID to base64 AES-256 key map; keep old keys during rotation until old sessions expire. |
 | `APP_ORIGIN` | Terraform environment | API | Yes | Exact HTTPS browser origin, no path or trailing slash. |
@@ -37,7 +41,7 @@ The API loads browser/OIDC/session configuration, the worker loads only database
 | `APP_ENV` | Terraform environment | API, worker | Yes in task definition | Fixed to `production`. Migration uses a dedicated database-only configuration path. |
 | `HTTP_ADDR` | Terraform environment | API | No | Defaults to `:8080`; Terraform injects it for the API. |
 
-`OIDC_CLIENT_SECRET` and `SESSION_ENCRYPTION_KEYS` are API-only secrets; the other new values are non-secret configuration. Terraform creates five secret shells, but only injects `CURSOR_HMAC_KEY`, `OIDC_CLIENT_SECRET`, and `SESSION_ENCRYPTION_KEYS` into the API. Existing secret names remain `DATABASE_URL`, `VALKEY_URL`, and `CURSOR_HMAC_KEY`. Populate all five secret versions out of band before starting ECS tasks. It does not create or configure Cognito.
+`OIDC_CLIENT_SECRET` and `SESSION_ENCRYPTION_KEYS` are API-only secrets; `IMAGE_BUCKET`, `AWS_REGION`, and `IMAGE_MESSAGES_ENABLED` are non-secret configuration. Terraform creates five secret shells, but only injects `CURSOR_HMAC_KEY`, `OIDC_CLIENT_SECRET`, and `SESSION_ENCRYPTION_KEYS` into the API. Existing secret names remain `DATABASE_URL`, `VALKEY_URL`, and `CURSOR_HMAC_KEY`. Populate all five secret versions out of band before starting ECS tasks. It does not create or configure Cognito.
 
 The ECS task execution role is the role ECS uses to retrieve Secrets Manager values and pull images; the task role is what application code receives. Keep the database master credential out of both task roles. See [ECS secret injection requirements](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/specifying-sensitive-data-tutorial.html) and [RDS-managed master credentials](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/rds-secrets-manager.html).
 
@@ -107,11 +111,11 @@ Linux scripts require Bash and Git. Image builds use Docker; publishing also req
 
 ## Schema-safe release and rollback
 
-The migration executable does not run in API startup. A release operator uses this sequence so schema work is one controlled Fargate task and service tasks continue running the prior image until the migration succeeds:
+The migration executable does not run in API startup. For the image release, the new API and worker explicitly support schema 1 (text) and schema 2 (text and images). Prepare that compatibility release before applying migration 0002: the earlier schema-1-only API fails readiness after a schema version change.
 
 1. Merge the backend commit and confirm its CI checks passed. Build and publish API/worker images once; record the full repository digests and current task definition revisions.
-2. Add only backward-compatible schema changes first: new tables, nullable columns, and indexes that old and new code can both tolerate. Keep destructive renames, drops, and required-column conversions for a later contract release.
-3. Set `migration_image_digest` to the new API `repository@sha256:...` while leaving `container_image_digests` at the currently deployed service images. Review and apply the task-definition-only Terraform change. It creates a one-off migration task definition; it does not change ECS services.
+2. Keep `enable_image_messages=false`. Deploy the new API and worker digests while the database is still at schema 1. Wait for every prior API and worker task to stop. Verify readiness, text send/replay/history/sync, and outbox delivery. Save these compatible digests for rollback. The new processes recheck the database version per operation and pick up migration 0002 without restarting.
+3. Set `migration_image_digest` to that compatible API `repository@sha256:...`. Review and apply the task-definition change. It creates a one-off migration task definition. Additive schema changes must fit the application's tested compatibility range; unknown schema versions fail readiness.
 4. Run that exact task-definition ARN in private subnets and check the process exit code:
 
    ```powershell
@@ -136,10 +140,11 @@ The migration executable does not run in API startup. A release operator uses th
    ```
 
    The migration task reads only `DATABASE_URL`, writes to the API CloudWatch log group, and exits before any API or worker task definition is updated. Do not terminate a migration task just because it is taking longer than expected; inspect its task state and migration logs first.
-5. After a zero exit code and migration review, update `container_image_digests` to the new API and worker digests and apply. ECS rolls tasks with the deployment circuit breaker enabled. Verify `/health/ready`, request errors and latency, socket reconnects, outbox age/retries, dependency health, database pool pressure, and committed-message recovery.
-6. Keep the expanded schema compatible with both the previous and current service versions for the rollback window. In a later release, after the previous code can no longer be restored, apply contract migrations to remove deprecated schema elements.
+5. After migration exits successfully, confirm schema 2, `/health/ready`, text replay/history/sync, outbox delivery, and the shared edge settings in [shared-edge/README.md](shared-edge/README.md). The running compatible API and worker remain healthy through the schema change. Check request errors/latency, socket reconnects, database pool pressure, and committed-message recovery.
+6. Set `enable_image_messages=true` in a separate reviewed apply. Enable image sends only after all API and worker tasks run the compatible release and the private edge paths have been checked.
+7. Keep the expanded schema compatible with both the previous and current service versions for the rollback window. In a later release, after the previous code can no longer be restored, apply contract migrations to remove deprecated schema elements.
 
-If the migration fails, leave the running service digests unchanged and inspect task logs before retrying. If a backward-compatible migration succeeds but the new application release fails, restore the previous API/worker digests through the reviewed Terraform change; leave the additive schema in place. Do not run an automatic down migration. If a later contract migration has removed data or old schema, rollback requires a forward repair or an approved database restore, not merely restoring an old image. Use the RDS snapshot and backup procedures in the readiness and cleanup references before any destructive schema change.
+If migration fails, leave the compatible service digests running and inspect task logs before retrying. After schema 2, roll back only to the saved image-compatible API/worker digests, with image sending disabled as needed; those binaries still read and deliver existing image metadata. The older schema-1-only release is not a valid rollback target. Leave the additive schema in place. Do not run an automatic down migration. Destructive schema changes need a forward repair or approved restore strategy.
 
 ECS Fargate's Linux `stopTimeout` has a maximum of 120 seconds; this module configures `SHUTDOWN_GRACE_SECONDS` to at most 25 and sets `stopTimeout` five seconds longer, for a bounded 30-second task stop budget ([ECS task definition parameters](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task_definition_parameters.html)). The application marks readiness unavailable before HTTP drain, sends WebSockets a going-away close, waits for ordinary requests, and has a force-close path at the deadline. The worker stops new claims, finishes or cancels active publishes, then releases any still-owned outbox leases through PostgreSQL under the same configured grace. Clients recover durable messages through the HTTP sync contract after reconnect.
 

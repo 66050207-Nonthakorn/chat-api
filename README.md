@@ -2,6 +2,8 @@
 
 This repository starts with the backend for the Cloud Computing chat project. The frontend is owned separately. The HTTP and WebSocket behavior follows `docs/api-contract.md`; PostgreSQL persistence follows `docs/database-schema.md` and the accepted ADRs.
 
+Image sending, retry, protected downloads and release steps are documented in [image messages](docs/image-messages.md). The [Bruno collection](bruno/cloud-chat-local/README.md) includes text and image requests with a bundled PNG fixture.
+
 ## Local prerequisites
 
 - Go 1.26 or newer
@@ -13,10 +15,10 @@ The local database image currently uses PostgreSQL 17 and Valkey 8. This is a lo
 ## Start the local dependencies
 
 ```powershell
-docker compose up -d --wait postgres valkey
+docker compose up -d --wait postgres valkey media
 ```
 
-The Compose file binds both services to loopback only. The PostgreSQL named volume survives container restarts. To remove the local database and all seeded data intentionally, run `docker compose down -v`.
+The Compose file binds PostgreSQL, Valkey, and the shared S3-compatible image store to loopback only. The local image bucket is created by SeaweedFS from the development environment settings. PostgreSQL and image data use named volumes that survive container restarts. To remove all local database and image data intentionally, run `docker compose down -v`.
 
 ## Configure and start the backend
 
@@ -54,7 +56,7 @@ In another shell with the same environment, start the separate worker process:
 go run ./cmd/worker
 ```
 
-The API, authenticated WebSocket server, and outbox worker are separate processes. The worker claims committed outbox events, publishes through Valkey, and records bounded retries. Readiness fails when dependencies are unhealthy or an API process is draining.
+The API, authenticated WebSocket server, and outbox worker are separate processes. The worker claims committed outbox events, publishes through Valkey, records bounded retries, and cleans up uncommitted image uploads. In local mode image sending is enabled by default; production keeps it disabled until all API and worker tasks run the image-compatible release. Readiness fails when dependencies are unhealthy or an API process is draining.
 
 Check process liveness and dependency/schema readiness:
 
@@ -73,6 +75,19 @@ curl --fail http://127.0.0.1:8080/health/ready
 Both endpoints return only a status value, include a server-generated `X-Request-ID`, and disable caching. Liveness stays healthy while dependencies are unavailable; readiness returns 503 until PostgreSQL has the supported schema and Valkey accepts a subscription.
 
 ## Integration checks
+
+Image rollout and streaming regressions use an isolated local stack:
+
+```powershell
+docker compose -p chat-image-hardening-tests -f .scratch/image-messages/compose.test.yaml up -d --wait
+$env:TEST_DATABASE_URL = "postgres://chat:chat@localhost:25433/chat?sslmode=disable"
+$env:TEST_VALKEY_URL = "redis://localhost:26380/0"
+$env:TEST_IMAGE_ENDPOINT = "http://localhost:28334"
+go test -p 1 ./...
+docker compose -p chat-image-hardening-tests -f .scratch/image-messages/compose.test.yaml down -v
+```
+
+The test creates isolated database schemas and random object keys. The explicit Compose project above owns only disposable test services. The suite checks schema-1 text traffic through migration 0002, image replay/outbox/member authorization, stalled uploads, overload rejection, and streaming/truncated downloads. See [shared edge integration](infra/shared-edge/README.md) for the offline CloudFront config check; it does not contact AWS.
 
 Set the test URLs to the local Compose services before running the PostgreSQL/Valkey integration tests:
 

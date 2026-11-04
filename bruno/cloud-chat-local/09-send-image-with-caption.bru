@@ -1,0 +1,42 @@
+meta {
+  name: 09-send-image-with-caption
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/api/v1/rooms/{{groupRoomId}}/messages
+  body: multipartForm
+  auth: none
+}
+
+headers {
+  X-Local-Test-User-ID: {{userAId}}
+}
+
+body:multipart-form {
+  client_message_id: {{imageClientMessageId}}
+  text: {{imageCaption}}
+  image: @file(fixtures/image.png)
+}
+
+script:post-response {
+  if ([200, 201].includes(res.getStatus())) {
+    const msg = res.getBody().message;
+    bru.setVar("sentImageUrl", msg.image.url);
+    bru.setVar("sentImageMessageId", msg.message_id);
+    bru.setVar("imageBeforeSeq", (BigInt(msg.seq) - 1n).toString());
+  }
+}
+
+tests {
+  test("image message persisted", function () {
+    expect([200, 201]).to.include(res.getStatus());
+    const msg = res.getBody().message;
+    expect(msg.text).to.equal(bru.getEnvVar("imageCaption"));
+    expect(msg.image.content_type).to.equal("image/png");
+    expect(msg.image.byte_size).to.be.greaterThan(0);
+    expect(msg.image.width).to.equal(8);
+    expect(msg.image.height).to.equal(8);
+  });
+}

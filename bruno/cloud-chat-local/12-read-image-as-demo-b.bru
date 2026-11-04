@@ -1,0 +1,27 @@
+meta {
+  name: 12-read-image-as-demo-b
+  type: http
+  seq: 12
+}
+
+get {
+  url: {{baseUrl}}{{sentImageUrl}}
+  body: none
+  auth: none
+}
+
+headers {
+  X-Local-Test-User-ID: {{userBId}}
+}
+
+
+
+tests {
+  test("member can download private image", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getHeader("content-type")).to.equal("image/png");
+    expect(res.getHeader("cache-control")).to.equal("no-store");
+    expect(res.getHeader("x-content-type-options")).to.equal("nosniff");
+    expect(Number(res.getHeader("content-length"))).to.be.greaterThan(0);
+  });
+}

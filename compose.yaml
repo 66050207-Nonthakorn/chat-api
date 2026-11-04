@@ -25,5 +25,19 @@ services:
       timeout: 3s
       retries: 12
 
+  media:
+    image: chrislusf/seaweedfs:4.52
+    command: ["mini", "-dir=/data", "-ip.bind=0.0.0.0", "-s3.port=8333"]
+    environment:
+      AWS_ACCESS_KEY_ID: admin
+      AWS_SECRET_ACCESS_KEY: secret
+      S3_BUCKET: cloudchat-images
+    ports:
+      - "127.0.0.1:8333:8333"
+    volumes:
+      - image-data:/data
+    restart: unless-stopped
+
 volumes:
   postgres-data:
+  image-data:

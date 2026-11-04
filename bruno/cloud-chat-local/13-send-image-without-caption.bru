@@ -1,0 +1,28 @@
+meta {
+  name: 13-send-image-without-caption
+  type: http
+  seq: 13
+}
+
+post {
+  url: {{baseUrl}}/api/v1/rooms/{{groupRoomId}}/messages
+  body: multipartForm
+  auth: none
+}
+
+headers {
+  X-Local-Test-User-ID: {{userAId}}
+}
+
+body:multipart-form {
+  client_message_id: {{imageOnlyClientMessageId}}
+  image: @file(fixtures/image.png)
+}
+
+tests {
+  test("caption is optional", function () {
+    expect([200, 201]).to.include(res.getStatus());
+    expect(res.getBody().message.text).to.equal("");
+    expect(res.getBody().message.image.content_type).to.equal("image/png");
+  });
+}

@@ -15,6 +15,7 @@ import (
 	"cloudchat/internal/db"
 	"cloudchat/internal/health"
 	"cloudchat/internal/httpapi"
+	"cloudchat/internal/imagestore"
 	"cloudchat/internal/migrations"
 	"cloudchat/internal/ratelimit"
 	"cloudchat/internal/realtime"
@@ -57,6 +58,10 @@ func run() error {
 		return err
 	}
 	defer func() { _ = valkey.Close() }()
+	imageStore, err := imagestore.Open(ctx, cfg)
+	if err != nil {
+		return err
+	}
 	rateLimiter, err := ratelimit.New(valkey, string(cfg.Environment))
 	if err != nil {
 		return err
@@ -77,12 +82,12 @@ func run() error {
 			return err
 		}
 
-		var schemaVersion int
-		if err := pool.QueryRow(ctx, "SELECT COALESCE(MAX(version), 0) FROM schema_migrations").Scan(&schemaVersion); err != nil {
+		schemaVersion, err := migrations.Version(ctx, pool)
+		if err != nil {
 			logDependencyHealth("postgres", false, "POSTGRES_SCHEMA_QUERY_FAILED")
 			return err
 		}
-		if schemaVersion != migrations.CurrentVersion {
+		if err := migrations.CheckVersion(schemaVersion, cfg.ImageMessagesEnabled); err != nil {
 			logDependencyHealth("postgres", false, "POSTGRES_SCHEMA_UNSUPPORTED")
 			return errors.New("database schema is not supported")
 		}
@@ -90,7 +95,7 @@ func run() error {
 
 		subscription := valkey.Subscribe(ctx, "health:readiness-probe")
 		defer func() { _ = subscription.Close() }()
-		_, err := subscription.Receive(ctx)
+		_, err = subscription.Receive(ctx)
 		logDependencyHealth("valkey", err == nil, "VALKEY_UNAVAILABLE")
 		return err
 	}
@@ -98,9 +103,9 @@ func run() error {
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           httpapi.NewHandlerWithAuthAndRateLimiter(cfg, pool, drain.Check, realtimeServer, authServer, rateLimiter),
+		Handler:           httpapi.NewHandlerWithAuthAndRateLimiter(cfg, pool, drain.Check, realtimeServer, authServer, rateLimiter, imageStore),
 		ReadHeaderTimeout: 5 * time.Second,
-		IdleTimeout:       60 * time.Second,
+		IdleTimeout:       65 * time.Second,
 	}
 
 	serverErrors := make(chan error, 1)

@@ -132,10 +132,28 @@ FK (room_id,owner_user_id) → room_memberships(room_id,user_id) แบบ DEFER
 | sender_user_id | uuid FK app_users | ไม่ FK ไป membership เพื่อให้ลบสมาชิกแล้วประวัติยังอยู่ |
 | sender_display_name | text 1–100 ตัวอักษร | snapshot ชื่อเพื่อ replay ได้ผลเดิม |
 | client_message_id | uuid | UNIQUE(sender_user_id,room_id,client_message_id) |
-| text | text, UTF-8 1–4096 bytes | DB ไม่รับ U+0000; แอปตรวจ Unicode/ไม่เป็น whitespace ล้วน โดยไม่ trim/normalize |
+| text | text, UTF-8 0–4096 bytes | ว่างได้เมื่อมี image_id; DB ไม่รับ U+0000; แอปตรวจข้อความล้วนว่าไม่เป็น whitespace |
+| image_id | uuid nullable FK image_upload_candidates | รูปที่ผ่านการประมวลผล หนึ่งรูปต่อข้อความ; null สำหรับข้อความเดิม/ข้อความล้วน |
 | created_at | timestamptz | server timestamp ไม่ใช้เรียงแทน seq |
 
 ไม่มี updated_at/deleted_at เพราะข้อความ v1 immutable; จำกัด role runtime ไม่ให้ UPDATE/DELETE messages ไม่ใช้ ON CONFLICT DO UPDATE แก้เนื้อหาเมื่อรหัสซ้ำ
+
+### image_upload_candidates
+
+ตารางนี้เป็น ledger ของ object ที่อาจยังไม่ถูกผูกกับข้อความและใช้ cleanup แบบ retry ได้ แต่ละ upload attempt ใช้ image_id/object_key ใหม่
+
+| คอลัมน์ | ชนิด/เงื่อนไข | ความหมาย |
+| --- | --- | --- |
+| image_id | uuid PK | รหัสภาพและ FK จากข้อความ |
+| room_id, sender_user_id | uuid FK | ผูก attempt กับห้องและผู้ส่ง |
+| client_message_id | uuid | รหัส idempotency เดียวกับ message send |
+| source_sha256, source_bytes, source_content_type | bytea, integer, text | fingerprint ที่ server คำนวณจากไฟล์ต้นทาง ใช้ตรวจ retry โดยไม่เก็บต้นฉบับ |
+| object_key | text UNIQUE | private storage key ที่ไม่ส่งให้ client |
+| content_type, byte_size, width, height | text/integer | metadata ของไฟล์ที่ encode ใหม่แล้ว; จำกัด JPEG/PNG, 5 MiB และ 2,560 px ต่อด้าน |
+| state | candidate / attached / deleting | ระบุ upload ที่รอผูก, ถูกส่งแล้ว หรือกำลัง cleanup |
+| cleanup_after, object_deleted_at, created_at | timestamptz | เวลาลองลบซ้ำ, tombstone และเวลาสร้าง |
+
+Candidate ถูกบันทึกก่อน PUT object; transaction ส่งข้อความเปลี่ยนเป็น attached พร้อม INSERT message และ outbox เดียวกัน Cleanup ล็อกแถวก่อนเปลี่ยนเป็น deleting และลบ object นอก transaction; retry ได้หลังลบล้มเหลว และลองลบซ้ำหลังช่วง tombstone 24 ชั่วโมงเพื่อครอบคลุม PUT ที่จบช้า ก่อนลบแถวที่ไม่มี message อ้างถึง
 
 ### message_outbox
 
@@ -166,7 +184,7 @@ FK (room_id,owner_user_id) → room_memberships(room_id,user_id) แบบ DEFER
 | history | UNIQUE messages(room_id,seq) | seq < before_seq, ORDER BY seq DESC, limit+1 |
 | sync | UNIQUE messages(room_id,seq) | after_seq < seq <= through_seq, ORDER BY seq, limit+1 |
 | claim outbox | partial (available_at,outbox_id) unpublished | available_at ถึงแล้วและ lease ว่าง/หมดอายุ; SKIP LOCKED |
-| cleanup | expires_at/idle_expires_at และ published_at | ทำเป็น batch ไม่ lock ตารางยาว |
+| cleanup image | partial image_upload_candidates_cleanup_idx | candidate เกิน 24 ชั่วโมงหรือ deleting ถึงเวลาลองซ้ำ; SKIP LOCKED |
 
 unique B-tree (room_id,seq) ใช้อ่านทั้งสองทิศ ไม่สร้าง index ซ้ำเพื่อ ASC/DESC; query ต้องตรวจสิทธิ์ก่อนอ่านแม้ index จะหาได้เร็ว ตรวจ EXPLAIN ANALYZE ด้วยข้อมูล/โหลดจริงภายหลัง
 
