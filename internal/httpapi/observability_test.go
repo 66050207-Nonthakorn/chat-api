@@ -16,11 +16,8 @@ import (
 
 func TestPublicHTTPLogsCorrelateRequestWithoutSensitiveRequestData(t *testing.T) {
 	var captured bytes.Buffer
-	previousLogger := slog.Default()
-	slog.SetDefault(slog.New(slog.NewJSONHandler(&captured, nil)))
-	t.Cleanup(func() { slog.SetDefault(previousLogger) })
-
-	handler := httpapi.NewHandler(config.Config{Environment: config.EnvironmentLocal}, nil, nil)
+	logger := slog.New(slog.NewJSONHandler(&captured, nil))
+	handler := httpapi.NewHandler(config.Config{Environment: config.EnvironmentLocal}, nil, httpapi.Options{Logger: logger})
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/unknown?code=query-secret", strings.NewReader("private message body"))
 	request.Header.Set("Cookie", "session=session-secret")
 	response := httptest.NewRecorder()
@@ -51,11 +48,8 @@ func TestPublicHTTPLogsCorrelateRequestWithoutSensitiveRequestData(t *testing.T)
 
 func TestRoomSyncRequestsLogCorrelatedLatencyWithSafeRouteName(t *testing.T) {
 	var captured bytes.Buffer
-	previousLogger := slog.Default()
-	slog.SetDefault(slog.New(slog.NewJSONHandler(&captured, nil)))
-	t.Cleanup(func() { slog.SetDefault(previousLogger) })
-
-	test := newTestServer(t)
+	logger := slog.New(slog.NewJSONHandler(&captured, nil))
+	test := newTestServer(t, httpapi.Options{Logger: logger})
 	response, _ := test.request(t, http.MethodGet,
 		"/api/v1/rooms/"+demo.GroupRoomID+"/sync?after_seq=0&through_seq=0", demo.UserAID, "")
 	if response.StatusCode != http.StatusOK {
@@ -77,5 +71,30 @@ func TestRoomSyncRequestsLogCorrelatedLatencyWithSafeRouteName(t *testing.T) {
 	}
 	if strings.Contains(captured.String(), demo.GroupRoomID) || strings.Contains(captured.String(), "after_seq") {
 		t.Fatalf("sync request log contains room path or query details: %s", captured.String())
+	}
+}
+
+func TestHandlersUseIndependentRequestLoggers(t *testing.T) {
+	defaultLogger := slog.Default()
+	var captured [2]bytes.Buffer
+	var handlers [2]http.Handler
+	for i := range handlers {
+		logger := slog.New(slog.NewJSONHandler(&captured[i], nil)).With("logger_owner", i)
+		handlers[i] = httpapi.NewHandler(config.Config{Environment: config.EnvironmentLocal}, nil, httpapi.Options{Logger: logger})
+	}
+	if slog.Default() != defaultLogger {
+		t.Fatal("constructing handlers replaced the process logger")
+	}
+	for i, handler := range handlers {
+		request := httptest.NewRequest(http.MethodGet, "/health/live", nil)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		var event map[string]any
+		if err := json.Unmarshal(bytes.TrimSpace(captured[i].Bytes()), &event); err != nil {
+			t.Fatalf("decode handler %d log %q: %v", i, captured[i].String(), err)
+		}
+		if event["logger_owner"] != float64(i) || event["request_id"] != response.Header().Get("X-Request-ID") {
+			t.Fatalf("handler %d log = %+v, want its own logger and request ID", i, event)
+		}
 	}
 }

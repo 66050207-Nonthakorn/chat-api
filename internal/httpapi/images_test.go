@@ -17,27 +17,50 @@ import (
 
 	"cloudchat/internal/auth"
 	"cloudchat/internal/config"
+	"cloudchat/internal/demo"
 	"cloudchat/internal/imagestore"
 )
 
 type imageTestStore struct {
+	put func(context.Context) error
 	get func() (imagestore.Object, error)
 }
 
-func (s imageTestStore) Put(context.Context, string, []byte, string) error      { return nil }
-func (s imageTestStore) Delete(context.Context, string) error                   { return nil }
+func (s imageTestStore) Put(ctx context.Context, _ string, _ []byte, _ string) error {
+	if s.put != nil {
+		return s.put(ctx)
+	}
+	return nil
+}
+
 func (s imageTestStore) Get(context.Context, string) (imagestore.Object, error) { return s.get() }
 
 func TestImageUploadRejectsBusyCapacityBeforeReadingBody(t *testing.T) {
-	imageUploadSlots <- struct{}{}
-	defer func() { <-imageUploadSlots }()
-	h := handler{config: config.Config{ImageMessagesEnabled: true}, images: imageTestStore{}}
-	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("unread"))
+	slots := make(chan struct{}, 1)
+	slots <- struct{}{}
+	h := handler{config: config.Config{ImageMessagesEnabled: true}, images: imageTestStore{}, imageUploadSlots: slots}
+	body := &gatedImageBody{data: []byte("unread")}
+	r := httptest.NewRequest(http.MethodPost, "/", body)
 	r.Header.Set("Content-Type", "multipart/form-data; boundary=test")
 	w := httptest.NewRecorder()
 	h.sendImageMessage(w, r, "unused", auth.Principal{})
-	if w.Code != http.StatusTooManyRequests || w.Header().Get("Retry-After") != "1" || !r.Close {
-		t.Fatalf("busy upload: status=%d headers=%v close=%v", w.Code, w.Header(), r.Close)
+	if w.Code != http.StatusTooManyRequests || w.Header().Get("Retry-After") != "1" || !r.Close || body.reads != 0 || len(slots) != 1 {
+		t.Fatalf("busy upload: status=%d headers=%v close=%v reads=%d occupied=%d", w.Code, w.Header(), r.Close, body.reads, len(slots))
+	}
+}
+
+func TestImageUploadRequiresExplicitAdmissionBeforeReadingBody(t *testing.T) {
+	h := NewHandler(config.Config{
+		Environment: config.EnvironmentLocal, EnableLocalTestIdentity: true, ImageMessagesEnabled: true,
+	}, nil, Options{Images: imageTestStore{}})
+	body := &gatedImageBody{data: []byte("unread")}
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/rooms/"+demo.GroupRoomID+"/messages", body)
+	r.Header.Set(auth.LocalTestUserHeader, demo.UserAID)
+	r.Header.Set("Content-Type", "multipart/form-data; boundary=test")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusServiceUnavailable || w.Header().Get("Connection") != "close" || body.reads != 0 || !strings.Contains(w.Body.String(), `"code":"DEPENDENCY_UNAVAILABLE"`) {
+		t.Fatalf("missing admission: status=%d headers=%v reads=%d body=%s", w.Code, w.Header(), body.reads, w.Body.String())
 	}
 }
 

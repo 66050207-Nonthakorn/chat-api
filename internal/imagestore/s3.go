@@ -14,12 +14,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
-type Store interface {
-	Put(context.Context, string, []byte, string) error
-	Get(context.Context, string) (Object, error)
-	Delete(context.Context, string) error
-}
-
 type Object struct {
 	Body io.ReadCloser
 	Size int64

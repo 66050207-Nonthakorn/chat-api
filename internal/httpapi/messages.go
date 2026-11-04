@@ -6,7 +6,6 @@ import (
 	"io"
 	"mime"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -136,7 +135,7 @@ func (h *handler) sendMessage(w http.ResponseWriter, r *http.Request, roomID str
 		dependencyUnavailable(w, r)
 		return
 	}
-	existing, err := scanMemberMessage(transaction.QueryRow(ctx, messageSelect+imageJoin+`
+	existing, err := scanMessage(transaction.QueryRow(ctx, messageSelect+imageJoin+`
 		WHERE m.sender_user_id = $1::uuid AND m.room_id = $2::uuid AND m.client_message_id = $3::uuid`,
 		principal.UserID, roomID, request.ClientMessageID))
 	if err == nil {
@@ -252,22 +251,6 @@ func scanMessage(row interface{ Scan(...any) error }) (chatmessage.Message, erro
 	var result chatmessage.Message
 	var senderID string
 	var createdAt time.Time
-	err := row.Scan(
-		&result.MessageID, &result.RoomID, &result.Seq, &senderID,
-		&result.Sender.DisplayName, &result.ClientMessageID, &result.Text, &createdAt,
-	)
-	if err != nil {
-		return chatmessage.Message{}, err
-	}
-	result.Sender.UserID = senderID
-	result.CreatedAt = createdAt.UTC().Format(time.RFC3339Nano)
-	return result, nil
-}
-
-func scanMemberMessage(row interface{ Scan(...any) error }) (chatmessage.Message, error) {
-	var result chatmessage.Message
-	var senderID string
-	var createdAt time.Time
 	var imageID, contentType pgtype.Text
 	var byteSize, width, height pgtype.Int4
 	err := row.Scan(
@@ -375,7 +358,7 @@ func (h *handler) messageHistory(w http.ResponseWriter, r *http.Request, roomID 
 	defer rows.Close()
 	items := make([]chatmessage.Message, 0, limit+1)
 	for rows.Next() {
-		item, err := scanMemberMessage(rows)
+		item, err := scanMessage(rows)
 		if err != nil {
 			dependencyUnavailable(w, r)
 			return
@@ -476,7 +459,7 @@ func (h *handler) syncMessages(w http.ResponseWriter, r *http.Request, roomID st
 	items := make([]chatmessage.Message, 0, limit+1)
 	expected := afterSeq + 1
 	for rows.Next() {
-		item, err := scanMemberMessage(rows)
+		item, err := scanMessage(rows)
 		if err != nil {
 			dependencyUnavailable(w, r)
 			return
@@ -510,41 +493,4 @@ func (h *handler) syncMessages(w http.ResponseWriter, r *http.Request, roomID st
 		NextAfterSeq string                `json:"next_after_seq"`
 		HasMore      bool                  `json:"has_more"`
 	}{Items: items, ThroughSeq: strconv.FormatInt(throughSeq, 10), NextAfterSeq: nextAfterSeq, HasMore: hasMore})
-}
-
-func parseQuery(w http.ResponseWriter, r *http.Request) (url.Values, bool) {
-	query, err := url.ParseQuery(r.URL.RawQuery)
-	if err != nil {
-		writeError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "Malformed query string", false, nil)
-		return nil, false
-	}
-	return query, true
-}
-
-func validateQueryKeys(w http.ResponseWriter, r *http.Request, query url.Values, allowed map[string]bool) bool {
-	for key, values := range query {
-		if !allowed[key] {
-			writeError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "Unsupported query parameter", false, []errorDetail{{Field: key, Code: "unknown"}})
-			return false
-		}
-		if len(values) != 1 {
-			writeError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "Query parameter must appear once", false, []errorDetail{{Field: key, Code: "duplicate"}})
-			return false
-		}
-	}
-	return true
-}
-
-func parseLimit(w http.ResponseWriter, r *http.Request, query url.Values, defaultValue, maximum int) (int, bool) {
-	values, exists := query["limit"]
-	if !exists {
-		return defaultValue, true
-	}
-	value := values[0]
-	parsed, err := strconv.Atoi(value)
-	if err != nil || parsed < 1 || parsed > maximum || strconv.Itoa(parsed) != value {
-		writeError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "Invalid page size", false, []errorDetail{{Field: "limit", Code: "invalid"}})
-		return 0, false
-	}
-	return parsed, true
 }

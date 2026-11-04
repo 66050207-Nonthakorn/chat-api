@@ -29,7 +29,7 @@ import (
 )
 
 func TestOIDCLoginCreatesOpaqueSessionAndConsumesCallbackOnce(t *testing.T) {
-	base := newTestServer(t)
+	base := newTestServer(t, httpapi.Options{})
 	provider := newFakeOIDC(t)
 	const subject = "cognito-subject-a"
 	seedOIDCIdentity(t, base.pool, provider.issuer, subject, demo.UserAID)
@@ -40,7 +40,7 @@ func TestOIDCLoginCreatesOpaqueSessionAndConsumesCallbackOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create auth server: %v", err)
 	}
-	app := httptest.NewServer(httpapi.NewHandlerWithAuth(cfg, base.pool, nil, nil, authServer))
+	app := httptest.NewServer(httpapi.NewHandler(cfg, base.pool, httpapi.Options{Auth: authServer}))
 	t.Cleanup(app.Close)
 
 	client := &http.Client{CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
@@ -451,7 +451,7 @@ func TestRefreshIsCoordinatedAcrossTwoHTTPReplicas(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create second replica auth service: %v", err)
 	}
-	secondReplica := httptest.NewServer(httpapi.NewHandlerWithAuth(app.config, app.base.pool, nil, nil, secondAuthServer))
+	secondReplica := httptest.NewServer(httpapi.NewHandler(app.config, app.base.pool, httpapi.Options{Auth: secondAuthServer}))
 	t.Cleanup(secondReplica.Close)
 
 	status := make(chan int, 2)
@@ -551,7 +551,7 @@ func TestSessionWebSocketPingTouchesIdleAndLogoutAllClosesIt(t *testing.T) {
 		t.Fatalf("create authenticated WebSocket service: %v", err)
 	}
 	t.Cleanup(hub.Close)
-	server := httptest.NewServer(httpapi.NewHandlerWithAuth(cfg, env.pool, nil, hub, authServer))
+	server := httptest.NewServer(httpapi.NewHandler(cfg, env.pool, httpapi.Options{WebSocket: hub, Auth: authServer}))
 	t.Cleanup(server.Close)
 	app := &authIntegrationApp{
 		base: env.test, server: server,
@@ -653,7 +653,7 @@ type authIntegrationApp struct {
 
 func newAuthIntegrationApp(t *testing.T, invite bool) *authIntegrationApp {
 	t.Helper()
-	base := newTestServer(t)
+	base := newTestServer(t, httpapi.Options{})
 	provider := newFakeOIDC(t)
 	if invite {
 		seedOIDCIdentity(t, base.pool, provider.issuer, "cognito-subject-a", demo.UserAID)
@@ -664,7 +664,7 @@ func newAuthIntegrationApp(t *testing.T, invite bool) *authIntegrationApp {
 	if err != nil {
 		t.Fatalf("create auth server: %v", err)
 	}
-	server := httptest.NewServer(httpapi.NewHandlerWithAuth(cfg, base.pool, nil, nil, authServer))
+	server := httptest.NewServer(httpapi.NewHandler(cfg, base.pool, httpapi.Options{Auth: authServer}))
 	t.Cleanup(server.Close)
 	return &authIntegrationApp{
 		base: base, server: server,

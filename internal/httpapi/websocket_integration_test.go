@@ -20,6 +20,7 @@ import (
 	"cloudchat/internal/config"
 	"cloudchat/internal/demo"
 	"cloudchat/internal/httpapi"
+	chatmessage "cloudchat/internal/message"
 	"cloudchat/internal/outbox"
 	"cloudchat/internal/ratelimit"
 	"cloudchat/internal/realtime"
@@ -297,7 +298,7 @@ func publishTestMessage(t *testing.T, env *webSocketTestEnv, message messageResp
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := env.valkey.Publish(ctx, outbox.EventChannel(string(config.EnvironmentLocal)), string(payload)).Err(); err != nil {
+	if err := env.valkey.Publish(ctx, chatmessage.EventChannel(string(config.EnvironmentLocal)), string(payload)).Err(); err != nil {
 		t.Fatalf("publish duplicate/out-of-order message event: %v", err)
 	}
 }
@@ -326,7 +327,7 @@ func newWebSocketTestEnvWithRateLimit(t *testing.T, options realtime.Options, en
 	if valkeyURL == "" {
 		t.Skip("set TEST_VALKEY_URL to run WebSocket integration tests")
 	}
-	test := newTestServer(t)
+	test := newTestServer(t, httpapi.Options{})
 	redisOptions, err := redis.ParseURL(valkeyURL)
 	if err != nil {
 		t.Fatalf("parse test Valkey URL: %v", err)
@@ -382,12 +383,8 @@ func newWebSocketTestEnvWithRateLimit(t *testing.T, options realtime.Options, en
 		primaryHub.Close()
 		t.Fatalf("start second WebSocket subscriber: %v", err)
 	}
-	primaryHandler := httpapi.NewHandlerWithRealtime(cfg, test.pool, nil, primaryHub)
-	replicaHandler := httpapi.NewHandlerWithRealtime(cfg, test.pool, nil, replicaHub)
-	if enabled {
-		primaryHandler = httpapi.NewHandlerWithAuthAndRateLimiter(cfg, test.pool, nil, primaryHub, nil, primaryLimiter)
-		replicaHandler = httpapi.NewHandlerWithAuthAndRateLimiter(cfg, test.pool, nil, replicaHub, nil, replicaLimiter)
-	}
+	primaryHandler := httpapi.NewHandler(cfg, test.pool, httpapi.Options{WebSocket: primaryHub, RateLimiter: primaryLimiter})
+	replicaHandler := httpapi.NewHandler(cfg, test.pool, httpapi.Options{WebSocket: replicaHub, RateLimiter: replicaLimiter})
 	primary := httptest.NewServer(primaryHandler)
 	replica := httptest.NewServer(replicaHandler)
 	t.Cleanup(func() {

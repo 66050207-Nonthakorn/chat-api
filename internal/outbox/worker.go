@@ -81,16 +81,10 @@ func NewWorkerWithOptions(pool *pgxpool.Pool, valkey redis.UniversalClient, envi
 	return &Worker{
 		pool:    pool,
 		valkey:  valkey,
-		channel: EventChannel(string(environment)),
+		channel: message.EventChannel(string(environment)),
 		options: options,
 		logger:  logger,
 	}
-}
-
-// EventChannel returns the single Pub/Sub channel shared by all replicas in
-// one environment.
-func EventChannel(environment string) string {
-	return "cloudchat:" + environment + ":events"
 }
 
 func normalizeOptions(options WorkerOptions) WorkerOptions {

@@ -89,7 +89,7 @@ func TestWebSocketShutdownClosesClientWithGoingAwayAndRejectsNewConnections(t *t
 	if err != nil {
 		t.Fatalf("start shutdown-test WebSocket hub: %v", err)
 	}
-	server := httptest.NewServer(httpapi.NewHandlerWithRealtime(cfg, env.pool, nil, hub))
+	server := httptest.NewServer(httpapi.NewHandler(cfg, env.pool, httpapi.Options{WebSocket: hub}))
 	t.Cleanup(func() {
 		server.Close()
 		hub.Close()
@@ -408,7 +408,7 @@ func newSessionSocketServer(t *testing.T, env *webSocketTestEnv, userID, session
 	if err != nil {
 		t.Fatalf("start session test WebSocket subscriber: %v", err)
 	}
-	handler := httpapi.NewHandlerWithRealtime(cfg, env.pool, nil, hub)
+	handler := httpapi.NewHandler(cfg, env.pool, httpapi.Options{WebSocket: hub})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		principal := auth.Principal{UserID: userID, DisplayName: "Demo B", SessionID: sessionID}
 		handler.ServeHTTP(w, r.WithContext(auth.ContextWithPrincipal(r.Context(), principal)))

@@ -6,14 +6,17 @@ import (
 	"log/slog"
 	"time"
 
-	"cloudchat/internal/imagestore"
 	"cloudchat/internal/migrations"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const batchSize = 50
 
-func Run(ctx context.Context, pool *pgxpool.Pool, store imagestore.Store) {
+type imageDeleter interface {
+	Delete(context.Context, string) error
+}
+
+func Run(ctx context.Context, pool *pgxpool.Pool, store imageDeleter) {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for {
@@ -28,7 +31,7 @@ func Run(ctx context.Context, pool *pgxpool.Pool, store imagestore.Store) {
 	}
 }
 
-func ProcessBatch(ctx context.Context, pool *pgxpool.Pool, store imagestore.Store) error {
+func ProcessBatch(ctx context.Context, pool *pgxpool.Pool, store imageDeleter) error {
 	version, err := migrations.Version(ctx, pool)
 	if err != nil {
 		return err

@@ -1,9 +1,6 @@
 // Package message defines the shared v1 message and event payloads.
 package message
 
-// CreatedType identifies an event for a committed message.
-const CreatedType = "message.created"
-
 // Message is the v1 HTTP and realtime message payload.
 type Message struct {
 	MessageID       string `json:"message_id"`
@@ -28,10 +25,4 @@ type Image struct {
 type Sender struct {
 	UserID      string `json:"user_id"`
 	DisplayName string `json:"display_name"`
-}
-
-// CreatedEvent carries a message to realtime subscribers.
-type CreatedEvent struct {
-	Type    string  `json:"type"`
-	Message Message `json:"message"`
 }

@@ -67,12 +67,13 @@ func run() error {
 		return err
 	}
 
-	realtimeServer, err := realtime.NewServer(context.Background(), pool, valkey, cfg, sessionRules, realtime.Options{Logger: slog.Default(), RateLimiter: rateLimiter})
+	logger := slog.Default()
+	realtimeServer, err := realtime.NewServer(context.Background(), pool, valkey, cfg, sessionRules, realtime.Options{Logger: logger, RateLimiter: rateLimiter})
 	if err != nil {
 		return err
 	}
 	defer realtimeServer.Close()
-	go monitorRuntimeMetrics(ctx, pool, realtimeServer, slog.Default())
+	go monitorRuntimeMetrics(ctx, pool, realtimeServer, logger)
 
 	readiness := func(parent context.Context) error {
 		ctx, cancel := context.WithTimeout(parent, 2*time.Second)
@@ -101,9 +102,16 @@ func run() error {
 	}
 	drain := health.NewDrainController(readiness)
 
+	// ponytail: one image pipeline per API task; fail fast when busy. Measure
+	// throughput before increasing concurrency and its corresponding memory bound.
+	imageUploadSlots := make(chan struct{}, 1)
 	server := &http.Server{
-		Addr:              cfg.HTTPAddr,
-		Handler:           httpapi.NewHandlerWithAuthAndRateLimiter(cfg, pool, drain.Check, realtimeServer, authServer, rateLimiter, imageStore),
+		Addr: cfg.HTTPAddr,
+		Handler: httpapi.NewHandler(cfg, pool, httpapi.Options{
+			Readiness: drain.Check, WebSocket: realtimeServer, Auth: authServer,
+			RateLimiter: rateLimiter, Images: imageStore, Logger: logger,
+			ImageUploadSlots: imageUploadSlots,
+		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       65 * time.Second,
 	}

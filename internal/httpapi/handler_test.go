@@ -14,6 +14,7 @@ import (
 	"sync"
 	"testing"
 
+	"cloudchat/internal/auth"
 	"cloudchat/internal/config"
 	"cloudchat/internal/demo"
 	"cloudchat/internal/httpapi"
@@ -26,7 +27,7 @@ type testServer struct {
 	pool   *pgxpool.Pool
 }
 
-func newTestServer(t *testing.T) *testServer {
+func newTestServer(t *testing.T, options httpapi.Options) *testServer {
 	t.Helper()
 
 	databaseURL := os.Getenv("TEST_DATABASE_URL")
@@ -44,14 +45,53 @@ func newTestServer(t *testing.T) *testServer {
 		EnableLocalTestIdentity: true,
 		CursorHMACKey:           "test-only-room-cursor-signing-key-0123456789",
 	}
-	server := httptest.NewServer(httpapi.NewHandler(cfg, pool, nil))
+	server := httptest.NewServer(httpapi.NewHandler(cfg, pool, options))
 	test := &testServer{server: server, pool: pool}
 	t.Cleanup(server.Close)
 	return test
 }
 
+func TestHandlerMissingDependenciesPreserveHealthAndFailClosedResponses(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		path          string
+		environment   config.Environment
+		authenticated bool
+		status        int
+		errorCode     string
+	}{
+		{"local liveness", "/health/live", config.EnvironmentLocal, false, http.StatusOK, ""},
+		{"production liveness", "/health/live", config.EnvironmentProduction, false, http.StatusOK, ""},
+		{"missing readiness", "/health/ready", config.EnvironmentLocal, false, http.StatusServiceUnavailable, ""},
+		{"missing auth", "/api/v1/session", config.EnvironmentLocal, false, http.StatusServiceUnavailable, "DEPENDENCY_UNAVAILABLE"},
+		{"missing realtime", "/api/v1/ws", config.EnvironmentLocal, false, http.StatusServiceUnavailable, "DEPENDENCY_UNAVAILABLE"},
+		{"unauthenticated production read", "/api/v1/rooms", config.EnvironmentProduction, false, http.StatusUnauthorized, "UNAUTHENTICATED"},
+		{"missing production limiter", "/api/v1/rooms", config.EnvironmentProduction, true, http.StatusServiceUnavailable, "DEPENDENCY_UNAVAILABLE"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			handler := httpapi.NewHandler(config.Config{Environment: test.environment}, nil, httpapi.Options{})
+			request := httptest.NewRequest(http.MethodGet, test.path, nil)
+			if test.authenticated {
+				request = request.WithContext(auth.ContextWithPrincipal(request.Context(), auth.Principal{UserID: demo.UserAID}))
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != test.status {
+				t.Fatalf("status = %d, body = %s; want %d", response.Code, response.Body.String(), test.status)
+			}
+			assertResponseMetadata(t, response.Result())
+			if test.errorCode != "" {
+				assertErrorCode(t, response.Body.Bytes(), test.errorCode)
+			}
+			if test.authenticated && response.Header().Get("Retry-After") != "1" {
+				t.Fatalf("missing limiter Retry-After = %q, want 1", response.Header().Get("Retry-After"))
+			}
+		})
+	}
+}
+
 func TestRoomsArePaginatedByKeysetAndCursorIsBoundToUser(t *testing.T) {
-	test := newTestServer(t)
+	test := newTestServer(t, httpapi.Options{})
 
 	firstResponse, firstBody := test.request(t, http.MethodGet, "/api/v1/rooms?limit=1", demo.UserAID, "")
 	if firstResponse.StatusCode != http.StatusOK {
@@ -108,7 +148,7 @@ func TestRoomsArePaginatedByKeysetAndCursorIsBoundToUser(t *testing.T) {
 }
 
 func TestSendReplayHistoryAndSyncUsePersistedHTTPState(t *testing.T) {
-	test := newTestServer(t)
+	test := newTestServer(t, httpapi.Options{})
 	const clientMessageID = "55555555-5555-4555-8555-555555555555"
 	body := `{"client_message_id":"` + clientMessageID + `","text":"hello"}`
 	path := "/api/v1/rooms/" + demo.GroupRoomID + "/messages"
@@ -171,7 +211,7 @@ func TestSendReplayHistoryAndSyncUsePersistedHTTPState(t *testing.T) {
 }
 
 func TestConcurrentRetriesReturnOneLogicalMessage(t *testing.T) {
-	test := newTestServer(t)
+	test := newTestServer(t, httpapi.Options{})
 	const clientMessageID = "66666666-6666-4666-8666-666666666666"
 	path := "/api/v1/rooms/" + demo.GroupRoomID + "/messages"
 	body := `{"client_message_id":"` + clientMessageID + `","text":"concurrent"}`
@@ -255,7 +295,7 @@ func TestConcurrentRetriesReturnOneLogicalMessage(t *testing.T) {
 }
 
 func TestRetryAfterUnknownResponseOutcomeReturnsStoredMessage(t *testing.T) {
-	test := newTestServer(t)
+	test := newTestServer(t, httpapi.Options{})
 	const clientMessageID = "77777777-7777-4777-8777-777777777777"
 	path := "/api/v1/rooms/" + demo.GroupRoomID + "/messages"
 	body := `{"client_message_id":"` + clientMessageID + `","text":"response lost"}`
@@ -284,7 +324,7 @@ func TestRetryAfterUnknownResponseOutcomeReturnsStoredMessage(t *testing.T) {
 }
 
 func TestMembershipHidesRoomAndBlocksReplayAndReads(t *testing.T) {
-	test := newTestServer(t)
+	test := newTestServer(t, httpapi.Options{})
 	const clientMessageID = "88888888-8888-4888-8888-888888888888"
 	messagePath := "/api/v1/rooms/" + demo.GroupRoomID + "/messages"
 	body := `{"client_message_id":"` + clientMessageID + `","text":"private"}`
@@ -320,7 +360,7 @@ func TestMembershipHidesRoomAndBlocksReplayAndReads(t *testing.T) {
 }
 
 func TestHistoryAndSyncPaginationRejectInvalidCursorsAndKeepSnapshots(t *testing.T) {
-	test := newTestServer(t)
+	test := newTestServer(t, httpapi.Options{})
 	messagePath := "/api/v1/rooms/" + demo.GroupRoomID + "/messages"
 	for index := 0; index < 3; index++ {
 		clientMessageID := fmt.Sprintf("99999999-9999-4999-9999-%012d", index+1)
@@ -411,7 +451,7 @@ func TestHistoryAndSyncPaginationRejectInvalidCursorsAndKeepSnapshots(t *testing
 }
 
 func TestSyncReportsASequenceGap(t *testing.T) {
-	test := newTestServer(t)
+	test := newTestServer(t, httpapi.Options{})
 	messagePath := "/api/v1/rooms/" + demo.GroupRoomID + "/messages"
 	for index := 1; index <= 3; index++ {
 		clientMessageID := fmt.Sprintf("bbbbbbbb-bbbb-4bbb-8bbb-%012d", index)
@@ -436,7 +476,7 @@ func TestSyncReportsASequenceGap(t *testing.T) {
 }
 
 func TestSyncReportsAMissingTailSequence(t *testing.T) {
-	test := newTestServer(t)
+	test := newTestServer(t, httpapi.Options{})
 	messagePath := "/api/v1/rooms/" + demo.GroupRoomID + "/messages"
 	for index := 1; index <= 2; index++ {
 		clientMessageID := fmt.Sprintf("eeeeeeee-eeee-4eee-8eee-%012d", index)
@@ -461,7 +501,7 @@ func TestSyncReportsAMissingTailSequence(t *testing.T) {
 }
 
 func TestOutboxFailureRollsBackMessageAndSequence(t *testing.T) {
-	test := newTestServer(t)
+	test := newTestServer(t, httpapi.Options{})
 	if _, err := test.pool.Exec(context.Background(), `
 		CREATE FUNCTION fail_outbox_for_test() RETURNS trigger LANGUAGE plpgsql AS $$
 		BEGIN RAISE EXCEPTION 'forced outbox failure'; END
@@ -495,7 +535,7 @@ func TestOutboxFailureRollsBackMessageAndSequence(t *testing.T) {
 }
 
 func TestSendValidationAndAuthenticationUseCommonErrorEnvelope(t *testing.T) {
-	test := newTestServer(t)
+	test := newTestServer(t, httpapi.Options{})
 	messagePath := "/api/v1/rooms/" + demo.GroupRoomID + "/messages"
 	unauthenticated, unauthenticatedBody := test.request(t, http.MethodGet, "/api/v1/rooms", "", "")
 	if unauthenticated.StatusCode != http.StatusUnauthorized {

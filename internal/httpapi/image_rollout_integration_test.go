@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"image"
 	"image/color"
 	"image/png"
@@ -13,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -61,7 +63,7 @@ func TestImageRolloutFromSchemaOneAndPrivateStreaming(t *testing.T) {
 	broker := redis.NewClient(opts)
 	t.Cleanup(func() { _ = broker.Close() })
 	worker := outbox.NewWorker(pool, broker, config.EnvironmentLocal)
-	subscriber := broker.Subscribe(ctx, outbox.EventChannel(string(config.EnvironmentLocal)))
+	subscriber := broker.Subscribe(ctx, message.EventChannel(string(config.EnvironmentLocal)))
 	defer subscriber.Close()
 	if _, err := subscriber.Receive(ctx); err != nil {
 		t.Fatal(err)
@@ -73,7 +75,8 @@ func TestImageRolloutFromSchemaOneAndPrivateStreaming(t *testing.T) {
 		}
 		return migrations.CheckVersion(version, false)
 	}
-	api := httptest.NewServer(NewHandlerWithAuthAndRateLimiter(cfg, pool, readiness, nil, nil, nil, store))
+	uploadSlots := make(chan struct{}, 1)
+	api := httptest.NewServer(NewHandler(cfg, pool, Options{Readiness: readiness, Images: store, ImageUploadSlots: uploadSlots}))
 	defer api.Close()
 	path := "/api/v1/rooms/" + demo.GroupRoomID + "/messages"
 	request := func(server *httptest.Server, method, path, user, contentType string, body io.Reader, want int) []byte {
@@ -129,7 +132,7 @@ func TestImageRolloutFromSchemaOneAndPrivateStreaming(t *testing.T) {
 	request(api, "POST", path, demo.UserAID, "application/json", strings.NewReader(textBody), 200)
 
 	cfg.ImageMessagesEnabled = true
-	imagesAPI := httptest.NewServer(NewHandlerWithAuthAndRateLimiter(cfg, pool, readiness, nil, nil, nil, store))
+	imagesAPI := httptest.NewServer(NewHandler(cfg, pool, Options{Readiness: readiness, Images: store, ImageUploadSlots: uploadSlots}))
 	defer imagesAPI.Close()
 	t.Cleanup(func() {
 		rows, err := pool.Query(context.Background(), "SELECT object_key FROM image_upload_candidates")
@@ -201,4 +204,101 @@ func TestImageRolloutFromSchemaOneAndPrivateStreaming(t *testing.T) {
 		t.Fatal(err)
 	}
 	request(imagesAPI, "GET", imageURL, demo.UserBID, "", nil, 404)
+}
+
+func TestImageUploadAdmissionSharedAcrossHandlers(t *testing.T) {
+	databaseURL := os.Getenv("TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("set TEST_DATABASE_URL for shared upload admission integration")
+	}
+	pool := testutil.IsolatedDatabase(t, databaseURL, "image_admission_")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	enteredStorage := make(chan struct{})
+	releaseStorage := make(chan struct{})
+	var puts atomic.Int32
+	store := imageTestStore{put: func(ctx context.Context) error {
+		if puts.Add(1) == 1 {
+			close(enteredStorage)
+			select {
+			case <-releaseStorage:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		return errors.New("test storage failure")
+	}}
+	cfg := config.Config{Environment: config.EnvironmentLocal, EnableLocalTestIdentity: true, ImageMessagesEnabled: true}
+	newServer := func(slots chan struct{}) *httptest.Server {
+		server := httptest.NewServer(NewHandler(cfg, pool, Options{Images: store, ImageUploadSlots: slots}))
+		t.Cleanup(server.Close)
+		return server
+	}
+	sharedSlots := make(chan struct{}, 1)
+	first := newServer(sharedSlots)
+	second := newServer(sharedSlots)
+	otherProcess := newServer(make(chan struct{}, 1))
+
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	_ = form.WriteField("client_message_id", "88888888-8888-4888-8888-888888888888")
+	part, err := form.CreateFormFile("image", "image.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := png.Encode(part, image.NewNRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+		t.Fatal(err)
+	}
+	if err := form.Close(); err != nil {
+		t.Fatal(err)
+	}
+	post := func(server *httptest.Server) (int, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/api/v1/rooms/"+demo.GroupRoomID+"/messages", bytes.NewReader(body.Bytes()))
+		if err != nil {
+			return 0, err
+		}
+		req.Header.Set(auth.LocalTestUserHeader, demo.UserAID)
+		req.Header.Set("Content-Type", form.FormDataContentType())
+		response, err := server.Client().Do(req)
+		if err != nil {
+			return 0, err
+		}
+		defer response.Body.Close()
+		_, err = io.Copy(io.Discard, response.Body)
+		return response.StatusCode, err
+	}
+	type result struct {
+		status int
+		err    error
+	}
+	completed := make(chan result, 1)
+	go func() {
+		status, err := post(first)
+		completed <- result{status, err}
+	}()
+	select {
+	case <-enteredStorage:
+	case got := <-completed:
+		t.Fatalf("first upload stopped before storage: %+v", got)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if status, err := post(second); err != nil || status != http.StatusTooManyRequests {
+		t.Fatalf("shared gate status=%d error=%v, want 429 while first upload stores its image", status, err)
+	}
+	if status, err := post(otherProcess); err != nil || status != http.StatusServiceUnavailable || puts.Load() != 2 {
+		t.Fatalf("independent gate status=%d error=%v puts=%d, want its own storage attempt", status, err, puts.Load())
+	}
+	close(releaseStorage)
+	select {
+	case got := <-completed:
+		if got.err != nil || got.status != http.StatusServiceUnavailable {
+			t.Fatalf("first upload result=%+v, want storage failure", got)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if status, err := post(second); err != nil || status != http.StatusServiceUnavailable || puts.Load() != 3 {
+		t.Fatalf("released gate status=%d error=%v puts=%d, want another storage attempt", status, err, puts.Load())
+	}
 }

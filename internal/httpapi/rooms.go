@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"net/http"
-	"strconv"
 
 	"cloudchat/internal/auth"
 	"cloudchat/internal/httpjson"
@@ -22,24 +21,12 @@ func (h *handler) listRooms(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	for key := range query {
-		if key != "limit" && key != "cursor" {
-			writeError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "Unsupported query parameter", false, []errorDetail{{Field: key, Code: "unknown"}})
-			return
-		}
-		if len(query[key]) != 1 {
-			writeError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "Query parameter must appear once", false, []errorDetail{{Field: key, Code: "duplicate"}})
-			return
-		}
+	if !validateQueryKeys(w, r, query, map[string]bool{"limit": true, "cursor": true}) {
+		return
 	}
-	limit := 50
-	if values, exists := query["limit"]; exists {
-		parsed, err := strconv.Atoi(values[0])
-		if err != nil || parsed < 1 || parsed > 100 || strconv.Itoa(parsed) != values[0] {
-			writeError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "Invalid page size", false, []errorDetail{{Field: "limit", Code: "invalid"}})
-			return
-		}
-		limit = parsed
+	limit, ok := parseLimit(w, r, query, 50, 100)
+	if !ok {
+		return
 	}
 	var afterRoomID *string
 	if token := query.Get("cursor"); token != "" {

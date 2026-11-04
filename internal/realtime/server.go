@@ -16,7 +16,6 @@ import (
 	"cloudchat/internal/auth"
 	"cloudchat/internal/config"
 	chatmessage "cloudchat/internal/message"
-	"cloudchat/internal/outbox"
 	"cloudchat/internal/ratelimit"
 	"cloudchat/internal/requestid"
 	"cloudchat/internal/strictjson"
@@ -58,7 +57,6 @@ type Server struct {
 	cancel       context.CancelFunc
 	pool         *pgxpool.Pool
 	sessionRules auth.SessionRules
-	channel      string
 	config       config.Config
 	options      Options
 	logger       *slog.Logger
@@ -91,7 +89,7 @@ func NewServer(parent context.Context, pool *pgxpool.Pool, valkey redis.Universa
 		logger = slog.Default()
 	}
 	ctx, cancel := context.WithCancel(parent)
-	channel := outbox.EventChannel(string(cfg.Environment))
+	channel := chatmessage.EventChannel(string(cfg.Environment))
 	pubsub := valkey.Subscribe(ctx, channel)
 	readyContext, readyCancel := context.WithTimeout(ctx, queryTimeout)
 	defer readyCancel()
@@ -105,7 +103,6 @@ func NewServer(parent context.Context, pool *pgxpool.Pool, valkey redis.Universa
 		cancel:       cancel,
 		pool:         pool,
 		sessionRules: sessionRules,
-		channel:      channel,
 		config:       cfg,
 		options:      options,
 		logger:       logger,

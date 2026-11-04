@@ -32,9 +32,10 @@ const (
 	imageUploadTimeout   = 45 * time.Second
 )
 
-// ponytail: one image pipeline per API task; fail fast when busy. Measure
-// throughput before increasing concurrency and its corresponding memory bound.
-var imageUploadSlots = make(chan struct{}, 1)
+type imageStore interface {
+	Put(context.Context, string, []byte, string) error
+	Get(context.Context, string) (imagestore.Object, error)
+}
 
 type imageSendRequest struct {
 	clientMessageID string
@@ -52,7 +53,7 @@ func (h *handler) sendImageMessage(w http.ResponseWriter, r *http.Request, roomI
 		writeError(w, r, http.StatusServiceUnavailable, "IMAGE_MESSAGES_DISABLED", "Image sending is not enabled yet", true, nil)
 		return
 	}
-	if h.images == nil {
+	if h.images == nil || h.imageUploadSlots == nil {
 		dependencyUnavailable(w, r)
 		return
 	}
@@ -68,8 +69,8 @@ func (h *handler) sendImageMessage(w http.ResponseWriter, r *http.Request, roomI
 	ctx, cancel := context.WithTimeout(r.Context(), imageUploadTimeout)
 	defer cancel()
 	select {
-	case imageUploadSlots <- struct{}{}:
-		defer func() { <-imageUploadSlots }()
+	case h.imageUploadSlots <- struct{}{}:
+		defer func() { <-h.imageUploadSlots }()
 	default:
 		r.Close = true
 		w.Header().Set("Connection", "close")
@@ -285,7 +286,7 @@ func (h *handler) persistImageMessage(w http.ResponseWriter, r *http.Request, ct
 		return
 	}
 
-	existing, err := scanMemberMessage(transaction.QueryRow(ctx, `
+	existing, err := scanMessage(transaction.QueryRow(ctx, `
 		SELECT m.message_id::text, m.room_id::text, m.seq::text, m.sender_user_id::text,
 		       m.sender_display_name, m.client_message_id::text, m.text, m.created_at,
 		       images.image_id::text, images.content_type, images.byte_size, images.width, images.height
@@ -412,7 +413,7 @@ func (h *handler) readMessageImage(w http.ResponseWriter, r *http.Request, roomI
 	streamImage(ctx, w, r, h.images, objectKey, contentType, byteSize)
 }
 
-func streamImage(ctx context.Context, w http.ResponseWriter, r *http.Request, store imagestore.Store, key, contentType string, byteSize int) {
+func streamImage(ctx context.Context, w http.ResponseWriter, r *http.Request, store imageStore, key, contentType string, byteSize int) {
 	if byteSize < 1 || byteSize > maxImageBytes || (contentType != "image/jpeg" && contentType != "image/png") {
 		dependencyUnavailable(w, r)
 		return

@@ -15,7 +15,6 @@ import (
 	"cloudchat/internal/auth"
 	"cloudchat/internal/config"
 	"cloudchat/internal/health"
-	"cloudchat/internal/imagestore"
 	"cloudchat/internal/ratelimit"
 	"cloudchat/internal/requestid"
 	"cloudchat/internal/uuid"
@@ -23,43 +22,47 @@ import (
 )
 
 type handler struct {
-	config    config.Config
-	pool      *pgxpool.Pool
-	websocket http.Handler
-	auth      *auth.Server
-	rateLimit *ratelimit.Limiter
-	images    imagestore.Store
+	config           config.Config
+	pool             *pgxpool.Pool
+	websocket        http.Handler
+	auth             *auth.Server
+	rateLimit        *ratelimit.Limiter
+	images           imageStore
+	imageUploadSlots chan struct{}
 }
 
-// NewHandler wires the public HTTP API and health endpoints. Authentication
-// is supplied by the configured identity middleware; production session auth
-// is added by the session implementation.
-func NewHandler(cfg config.Config, pool *pgxpool.Pool, readiness health.ReadinessCheck) http.Handler {
-	return NewHandlerWithRealtime(cfg, pool, readiness, nil)
+// Options supplies HTTP dependencies. The caller owns their
+// process lifecycles and shares the rate limiter with its realtime server.
+type Options struct {
+	Readiness   health.ReadinessCheck
+	WebSocket   http.Handler
+	Auth        *auth.Server
+	RateLimiter *ratelimit.Limiter
+	Images      imageStore
+	// Logger defaults to slog.Default at construction when omitted.
+	Logger *slog.Logger
+	// ImageUploadSlots must be one capacity-one channel shared by all handlers
+	// in an API process. Image sends fail closed when it is omitted.
+	ImageUploadSlots chan struct{}
 }
 
-// NewHandlerWithRealtime wires the HTTP API and, when supplied, the local
-// WebSocket subscriber. The WebSocket service owns its own process lifecycle.
-func NewHandlerWithRealtime(cfg config.Config, pool *pgxpool.Pool, readiness health.ReadinessCheck, websocketHandler http.Handler) http.Handler {
-	return NewHandlerWithAuth(cfg, pool, readiness, websocketHandler, nil)
-}
-
-// NewHandlerWithAuth wires OIDC login/session endpoints and PostgreSQL-backed
-// authentication when authServer is configured.
-func NewHandlerWithAuth(cfg config.Config, pool *pgxpool.Pool, readiness health.ReadinessCheck, websocketHandler http.Handler, authServer *auth.Server) http.Handler {
-	return NewHandlerWithAuthAndRateLimiter(cfg, pool, readiness, websocketHandler, authServer, nil)
-}
-
-// NewHandlerWithAuthAndRateLimiter wires the public API with shared Valkey
-// rate limiting. Production API startup must pass the limiter used by its
-// realtime server; constructors without it remain useful for isolated tests.
-func NewHandlerWithAuthAndRateLimiter(cfg config.Config, pool *pgxpool.Pool, readiness health.ReadinessCheck, websocketHandler http.Handler, authServer *auth.Server, limiter *ratelimit.Limiter, imageStores ...imagestore.Store) http.Handler {
-	var imageStorage imagestore.Store
-	if len(imageStores) > 0 {
-		imageStorage = imageStores[0]
+// NewHandler wires the public HTTP API, authentication and health endpoints.
+// Missing dependencies retain their endpoint-specific unavailable responses;
+// authenticated rate-limited requests fail closed outside local mode.
+func NewHandler(cfg config.Config, pool *pgxpool.Pool, options Options) http.Handler {
+	logger := options.Logger
+	if logger == nil {
+		logger = slog.Default()
 	}
-	api := &handler{config: cfg, pool: pool, websocket: websocketHandler, auth: authServer, rateLimit: limiter, images: imageStorage}
-	healthHandler := health.NewHandler(readiness)
+	api := &handler{
+		config: cfg, pool: pool,
+		websocket:        options.WebSocket,
+		auth:             options.Auth,
+		rateLimit:        options.RateLimiter,
+		images:           options.Images,
+		imageUploadSlots: options.ImageUploadSlots,
+	}
+	healthHandler := health.NewHandler(options.Readiness)
 	root := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/health/live" || r.URL.Path == "/health/ready" {
 			healthHandler.ServeHTTP(w, r)
@@ -80,13 +83,13 @@ func NewHandlerWithAuthAndRateLimiter(cfg config.Config, pool *pgxpool.Pool, rea
 		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "Resource not found", false, nil)
 	})
 	var authenticated http.Handler = root
-	if limiter != nil || cfg.Environment != config.EnvironmentLocal {
+	if api.rateLimit != nil || cfg.Environment != config.EnvironmentLocal {
 		authenticated = api.rateLimitMiddleware(authenticated)
 	}
-	if authServer != nil {
-		authenticated = authServer.Middleware(authenticated)
+	if api.auth != nil {
+		authenticated = api.auth.Middleware(authenticated)
 	}
-	return requestMetadata(auth.LocalTestIdentityMiddleware(cfg, authenticated))
+	return requestMetadata(auth.LocalTestIdentityMiddleware(cfg, authenticated), logger)
 }
 
 func (h *handler) serveHTTP(w http.ResponseWriter, r *http.Request) {
@@ -138,7 +141,7 @@ func writeError(w http.ResponseWriter, r *http.Request, status int, code, messag
 	apierror.Write(w, status, code, message, retryable, details)
 }
 
-func requestMetadata(next http.Handler) http.Handler {
+func requestMetadata(next http.Handler, logger *slog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := requestID()
 		w.Header().Set("X-Request-ID", id)
@@ -153,7 +156,7 @@ func requestMetadata(next http.Handler) http.Handler {
 		if responseID := w.Header().Get("X-Request-ID"); responseID != "" {
 			id = responseID
 		}
-		slog.Default().Info("http request",
+		logger.Info("http request",
 			"event", "http.request",
 			"service", "api",
 			"request_id", id,

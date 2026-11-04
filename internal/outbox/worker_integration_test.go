@@ -18,6 +18,7 @@ import (
 	"cloudchat/internal/config"
 	"cloudchat/internal/demo"
 	"cloudchat/internal/httpapi"
+	chatmessage "cloudchat/internal/message"
 	"cloudchat/internal/outbox"
 	"cloudchat/internal/testutil"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -30,7 +31,7 @@ func TestPublishesCommittedMessageToValkeyAndMarksOutbox(t *testing.T) {
 	env := newWorkerTestEnv(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	channel := outbox.EventChannel(string(config.EnvironmentLocal))
+	channel := chatmessage.EventChannel(string(config.EnvironmentLocal))
 	subscriber := env.subscribe(t, ctx, channel)
 	created := createMessage(t, env.api.Client(), env.api.URL)
 	worker := outbox.NewWorker(env.pool, env.valkey, config.EnvironmentLocal)
@@ -77,7 +78,7 @@ func TestRecoversAnExpiredLeaseAfterWorkerStopsBeforePublish(t *testing.T) {
 	env := newWorkerTestEnv(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	channel := outbox.EventChannel(string(config.EnvironmentLocal))
+	channel := chatmessage.EventChannel(string(config.EnvironmentLocal))
 	subscriber := env.subscribe(t, ctx, channel)
 	created := createMessage(t, env.api.Client(), env.api.URL)
 
@@ -108,7 +109,7 @@ func TestShutdownReleasesClaimedOutboxWorkForAnImmediateReplacementWorker(t *tes
 	env := newWorkerTestEnv(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	subscriber := env.subscribe(t, ctx, outbox.EventChannel(string(config.EnvironmentLocal)))
+	subscriber := env.subscribe(t, ctx, chatmessage.EventChannel(string(config.EnvironmentLocal)))
 	created := createMessage(t, env.api.Client(), env.api.URL)
 
 	gate := &gatedPublisher{
@@ -157,7 +158,7 @@ func TestStalePublisherCannotFinishAfterAReplacementOwnsTheLease(t *testing.T) {
 	env := newWorkerTestEnv(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	subscriber := env.subscribe(t, ctx, outbox.EventChannel(string(config.EnvironmentLocal)))
+	subscriber := env.subscribe(t, ctx, chatmessage.EventChannel(string(config.EnvironmentLocal)))
 	created := createMessage(t, env.api.Client(), env.api.URL)
 
 	gate := &gatedPublisher{
@@ -241,7 +242,7 @@ func TestRetryAfterLostPublishAcknowledgementCanDuplicateTheEvent(t *testing.T) 
 	env := newWorkerTestEnv(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	subscriber := env.subscribe(t, ctx, outbox.EventChannel(string(config.EnvironmentLocal)))
+	subscriber := env.subscribe(t, ctx, chatmessage.EventChannel(string(config.EnvironmentLocal)))
 	created := createMessage(t, env.api.Client(), env.api.URL)
 	var captured bytes.Buffer
 
@@ -316,7 +317,7 @@ func newWorkerTestEnv(t *testing.T) *workerTestEnv {
 		ValkeyURL:               valkeyURL,
 		EnableLocalTestIdentity: true,
 		CursorHMACKey:           "test-only-room-cursor-signing-key-0123456789",
-	}, pool, nil))
+	}, pool, httpapi.Options{}))
 	t.Cleanup(api.Close)
 	return &workerTestEnv{pool: pool, valkey: valkey, api: api}
 }

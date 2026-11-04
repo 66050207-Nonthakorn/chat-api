@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -161,7 +162,6 @@ type tracker struct {
 	privateAccepted    int
 	duplicates         int
 	wsAcks             int
-	syncErrors         int
 }
 
 type socketMessage struct {
@@ -380,7 +380,7 @@ sent:
 	workloadElapsed := time.Since(durationStart)
 	time.Sleep(options.SettleDuration)
 
-	synced, syncErrors, syncErr := reconcile(ctx, client, baseURL, cfg, baseline, tracker)
+	synced, syncErrors, syncErr := reconcile(ctx, client, baseURL, cfg, baseline)
 	syncEnd := time.Now()
 	if sampler != nil {
 		waitForOutboxDrain(ctx, sampler, 20*time.Second)
@@ -646,7 +646,7 @@ func readBaselines(ctx context.Context, client *http.Client, baseURL *url.URL, c
 	return baselines, nil
 }
 
-func reconcile(ctx context.Context, client *http.Client, baseURL *url.URL, cfg Config, baseline map[string]string, tracker *tracker) (map[string]map[string]struct{}, int, error) {
+func reconcile(ctx context.Context, client *http.Client, baseURL *url.URL, cfg Config, baseline map[string]string) (map[string]map[string]struct{}, int, error) {
 	result := make(map[string]map[string]struct{}, 2)
 	var syncErrors int
 	for _, roomID := range []string{cfg.GroupRoomID, cfg.PrivateRoomID} {
@@ -657,9 +657,6 @@ func reconcile(ctx context.Context, client *http.Client, baseURL *url.URL, cfg C
 			page, err := getSync(ctx, client, baseURL, cfg.UserAID, roomID, cursor, through, 200)
 			if err != nil {
 				syncErrors++
-				tracker.mu.Lock()
-				tracker.syncErrors++
-				tracker.mu.Unlock()
 				return result, syncErrors, fmt.Errorf("sync room %s after %s: %w", roomID, cursor, err)
 			}
 			through = page.ThroughSeq
@@ -671,9 +668,6 @@ func reconcile(ctx context.Context, client *http.Client, baseURL *url.URL, cfg C
 			}
 			if page.NextAfterSeq == cursor {
 				syncErrors++
-				tracker.mu.Lock()
-				tracker.syncErrors++
-				tracker.mu.Unlock()
 				return result, syncErrors, fmt.Errorf("sync cursor did not advance for room %s", roomID)
 			}
 			cursor = page.NextAfterSeq
@@ -732,8 +726,8 @@ func buildReport(start, completed time.Time, elapsed, connectionRamp time.Durati
 			AttemptedMessages:       attempted,
 			Elapsed:                 elapsed.String(),
 		},
-		WebSockets: WebSocketReport{SubscribeAcks: tracker.wsAcks, DialFailureReasons: cloneMap(tracker.dialFailureReasons)},
-		Errors:     ErrorReport{HTTPStatusCounts: cloneMap(tracker.httpStatuses), SyncErrors: syncErrors},
+		WebSockets: WebSocketReport{SubscribeAcks: tracker.wsAcks, DialFailureReasons: maps.Clone(tracker.dialFailureReasons)},
+		Errors:     ErrorReport{HTTPStatusCounts: maps.Clone(tracker.httpStatuses), SyncErrors: syncErrors},
 		Traffic:    TrafficReport{GroupMessages: tracker.groupAccepted, PrivateMessages: tracker.privateAccepted, DuplicateFrames: tracker.duplicates},
 		Limitations: []string{
 			"This result is local-container evidence only; AWS RDS failover and ECS autoscaling were not exercised.",
@@ -1035,12 +1029,4 @@ func waitContext(ctx context.Context, duration time.Duration) bool {
 	case <-timer.C:
 		return true
 	}
-}
-
-func cloneMap(source map[string]int) map[string]int {
-	result := make(map[string]int, len(source))
-	for key, value := range source {
-		result[key] = value
-	}
-	return result
 }
