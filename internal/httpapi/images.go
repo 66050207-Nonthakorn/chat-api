@@ -324,7 +324,7 @@ func (h *handler) persistImageMessage(w http.ResponseWriter, r *http.Request, ct
 		dependencyUnavailable(w, r)
 		return
 	}
-	if seq >= 9223372036854775807 {
+	if seq == 9223372036854775807 {
 		dependencyUnavailable(w, r)
 		return
 	}
