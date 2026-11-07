@@ -90,6 +90,34 @@ func TestHandlerMissingDependenciesPreserveHealthAndFailClosedResponses(t *testi
 	}
 }
 
+func TestRoutingPreservesErrorsAndAuthentication(t *testing.T) {
+	handler := httpapi.NewHandler(config.Config{Environment: config.EnvironmentLocal}, nil, httpapi.Options{})
+	for _, tc := range []struct {
+		method, path, code string
+		authenticated      bool
+		status             int
+	}{
+		{http.MethodGet, "/api/v1/rooms/not-a-uuid/messages", "UNAUTHENTICATED", false, http.StatusUnauthorized},
+		{http.MethodGet, "/api/v1/rooms/not-a-uuid/messages", "ROOM_NOT_FOUND", true, http.StatusNotFound},
+		{http.MethodGet, "/api/v1/rooms/not-a-uuid/messages/not-a-uuid/image", "NOT_FOUND", true, http.StatusNotFound},
+		{http.MethodDelete, "/api/v1/rooms/11111111-1111-4111-8111-111111111111/messages", "INVALID_REQUEST", true, http.StatusMethodNotAllowed},
+		{http.MethodGet, "/api/v1/rooms/", "ROOM_NOT_FOUND", true, http.StatusNotFound},
+	} {
+		t.Run(tc.method+" "+tc.path+tc.code, func(t *testing.T) {
+			request := httptest.NewRequest(tc.method, tc.path, nil)
+			if tc.authenticated {
+				request = request.WithContext(auth.ContextWithPrincipal(request.Context(), auth.Principal{UserID: demo.UserAID}))
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != tc.status {
+				t.Fatalf("status = %d, body = %s; want %d", response.Code, response.Body.String(), tc.status)
+			}
+			assertErrorCode(t, response.Body.Bytes(), tc.code)
+		})
+	}
+}
+
 func TestRoomsArePaginatedByKeysetAndCursorIsBoundToUser(t *testing.T) {
 	test := newTestServer(t, httpapi.Options{})
 

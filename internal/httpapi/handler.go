@@ -18,6 +18,7 @@ import (
 	"cloudchat/internal/ratelimit"
 	"cloudchat/internal/requestid"
 	"cloudchat/internal/uuid"
+	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -82,7 +83,36 @@ func NewHandler(cfg config.Config, pool *pgxpool.Pool, options Options) http.Han
 		}
 		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "Resource not found", false, nil)
 	})
-	var authenticated http.Handler = root
+	router := gin.New()
+	router.RedirectTrailingSlash = false
+	router.RedirectFixedPath = false
+	// Preserve existing errors for unsupported methods and unknown paths.
+	router.NoRoute(gin.WrapH(root))
+	router.GET("/health/live", gin.WrapH(healthHandler))
+	router.GET("/health/ready", gin.WrapH(healthHandler))
+	router.HEAD("/health/live", gin.WrapH(healthHandler))
+	router.HEAD("/health/ready", gin.WrapH(healthHandler))
+	router.GET("/api/v1/ws", gin.WrapH(root))
+	router.GET("/api/v1/rooms", api.route(api.listRooms))
+	router.POST("/api/v1/rooms", api.route(api.createRoom))
+	router.GET("/api/v1/users", api.route(api.searchUsers))
+	router.GET("/api/v1/rooms/:roomID/members", api.roomRoute(api.listMembers))
+	router.POST("/api/v1/rooms/:roomID/members", api.roomRoute(api.addMembers))
+	router.GET("/api/v1/rooms/:roomID/messages", api.roomRoute(api.messageHistory))
+	router.POST("/api/v1/rooms/:roomID/messages", api.roomRoute(api.sendMessage))
+	router.GET("/api/v1/rooms/:roomID/sync", api.roomRoute(api.syncMessages))
+	router.GET("/api/v1/rooms/:roomID/messages/:messageID/image", func(c *gin.Context) {
+		if _, ok := requirePrincipal(c.Writer, c.Request); !ok {
+			return
+		}
+		roomID, messageID := c.Param("roomID"), c.Param("messageID")
+		if !uuid.IsCanonical(roomID) || !uuid.IsCanonical(messageID) {
+			writeError(c.Writer, c.Request, http.StatusNotFound, "NOT_FOUND", "Resource not found", false, nil)
+			return
+		}
+		api.readMessageImage(c.Writer, c.Request, roomID, messageID)
+	})
+	var authenticated http.Handler = router
 	if api.rateLimit != nil || cfg.Environment != config.EnvironmentLocal {
 		authenticated = api.rateLimitMiddleware(authenticated)
 	}
@@ -90,6 +120,28 @@ func NewHandler(cfg config.Config, pool *pgxpool.Pool, options Options) http.Han
 		authenticated = api.auth.Middleware(authenticated)
 	}
 	return requestMetadata(auth.LocalTestIdentityMiddleware(cfg, authenticated), logger)
+}
+
+func (h *handler) route(handle func(http.ResponseWriter, *http.Request)) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if _, ok := requirePrincipal(c.Writer, c.Request); ok {
+			handle(c.Writer, c.Request)
+		}
+	}
+}
+
+func (h *handler) roomRoute(handle func(http.ResponseWriter, *http.Request, string)) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if _, ok := requirePrincipal(c.Writer, c.Request); !ok {
+			return
+		}
+		roomID := c.Param("roomID")
+		if !uuid.IsCanonical(roomID) {
+			writeError(c.Writer, c.Request, http.StatusNotFound, "ROOM_NOT_FOUND", "Room not found", false, nil)
+			return
+		}
+		handle(c.Writer, c.Request, roomID)
+	}
 }
 
 func (h *handler) serveHTTP(w http.ResponseWriter, r *http.Request) {
