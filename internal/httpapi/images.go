@@ -15,10 +15,8 @@ import (
 	"unicode/utf8"
 
 	"cloudchat/internal/auth"
-	"cloudchat/internal/httpjson"
 	"cloudchat/internal/imageproc"
 	"cloudchat/internal/imagestore"
-	chatmessage "cloudchat/internal/message"
 	"cloudchat/internal/migrations"
 	"cloudchat/internal/uuid"
 	"github.com/jackc/pgx/v5"
@@ -161,7 +159,11 @@ func (h *handler) sendImageMessage(w http.ResponseWriter, r *http.Request, roomI
 		return
 	}
 
-	h.persistImageMessage(w, r, ctx, roomID, principal, request, imageID, sourceDigest, len(request.image), sourceType, processed)
+	result, err := h.writeMessage(ctx, messageWriteRequest{
+		roomID: roomID, principal: principal, clientMessageID: request.clientMessageID, text: request.text,
+		image: &messageImageCandidate{id: imageID, sourceDigest: sourceDigest, sourceBytes: len(request.image), sourceType: sourceType, processed: processed},
+	})
+	writeMessageResponse(w, r, result, err)
 }
 
 var errImageTooLarge = errors.New("image request exceeds the size limit")
@@ -235,146 +237,6 @@ func readImageSendRequest(ctx context.Context, w http.ResponseWriter, r *http.Re
 	}
 	complete = true
 	return request, nil
-}
-
-func (h *handler) persistImageMessage(w http.ResponseWriter, r *http.Request, ctx context.Context, roomID string, principal auth.Principal, request imageSendRequest, imageID string, sourceDigest [32]byte, sourceBytes int, sourceType string, processed imageproc.Result) {
-	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
-	transaction, err := h.pool.Begin(ctx)
-	if err != nil {
-		dependencyUnavailable(w, r)
-		return
-	}
-	defer func() { _ = transaction.Rollback(context.Background()) }()
-	validSession, err := auth.LockActiveSession(ctx, transaction, principal)
-	if err != nil {
-		dependencyUnavailable(w, r)
-		return
-	}
-	if !validSession {
-		writeError(w, r, http.StatusUnauthorized, "UNAUTHENTICATED", "Authentication required", false, nil)
-		return
-	}
-	var displayName string
-	err = transaction.QueryRow(ctx, `SELECT display_name FROM app_users WHERE user_id = $1::uuid AND is_active FOR SHARE`, principal.UserID).Scan(&displayName)
-	if errors.Is(err, pgx.ErrNoRows) {
-		writeError(w, r, http.StatusForbidden, "ACCOUNT_NOT_ALLOWED", "Account is not allowed", false, nil)
-		return
-	}
-	if err != nil {
-		dependencyUnavailable(w, r)
-		return
-	}
-	var seq int64
-	err = transaction.QueryRow(ctx, `SELECT last_seq FROM rooms WHERE room_id = $1::uuid FOR UPDATE`, roomID).Scan(&seq)
-	if errors.Is(err, pgx.ErrNoRows) {
-		writeRoomNotFound(w, r)
-		return
-	}
-	if err != nil {
-		dependencyUnavailable(w, r)
-		return
-	}
-	var isMember bool
-	err = transaction.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM room_memberships WHERE room_id = $1::uuid AND user_id = $2::uuid)`, roomID, principal.UserID).Scan(&isMember)
-	if err != nil {
-		dependencyUnavailable(w, r)
-		return
-	}
-	if !isMember {
-		writeRoomNotFound(w, r)
-		return
-	}
-
-	existing, err := scanMessage(transaction.QueryRow(ctx, `
-		SELECT m.message_id::text, m.room_id::text, m.seq::text, m.sender_user_id::text,
-		       m.sender_display_name, m.client_message_id::text, m.text, m.created_at,
-		       images.image_id::text, images.content_type, images.byte_size, images.width, images.height
-		FROM messages m LEFT JOIN image_upload_candidates images ON images.image_id = m.image_id
-		WHERE m.sender_user_id = $1::uuid AND m.room_id = $2::uuid AND m.client_message_id = $3::uuid`,
-		principal.UserID, roomID, request.clientMessageID))
-	if err == nil {
-		if existing.Text != request.text || existing.Image == nil {
-			writeError(w, r, http.StatusConflict, "IDEMPOTENCY_CONFLICT", "Request key already used with different content", false, nil)
-			return
-		}
-		var existingDigest []byte
-		var existingBytes int
-		var existingType string
-		err = transaction.QueryRow(ctx, `SELECT source_sha256, source_bytes, source_content_type FROM image_upload_candidates WHERE image_id = (SELECT image_id FROM messages WHERE message_id = $1::uuid)`, existing.MessageID).Scan(&existingDigest, &existingBytes, &existingType)
-		if err != nil {
-			dependencyUnavailable(w, r)
-			return
-		}
-		if existing.Text != request.text || existingBytes != sourceBytes || existingType != sourceType || !bytes.Equal(existingDigest, sourceDigest[:]) {
-			writeError(w, r, http.StatusConflict, "IDEMPOTENCY_CONFLICT", "Request key already used with different content", false, nil)
-			return
-		}
-		if err := transaction.Commit(ctx); err != nil {
-			dependencyUnavailable(w, r)
-			return
-		}
-		httpjson.Write(w, http.StatusOK, struct {
-			Message  chatmessage.Message `json:"message"`
-			Replayed bool                `json:"replayed"`
-		}{Message: existing, Replayed: true})
-		return
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		dependencyUnavailable(w, r)
-		return
-	}
-	if seq == 9223372036854775807 {
-		dependencyUnavailable(w, r)
-		return
-	}
-	seq++
-	if _, err := transaction.Exec(ctx, `UPDATE rooms SET last_seq = $2 WHERE room_id = $1::uuid`, roomID, seq); err != nil {
-		dependencyUnavailable(w, r)
-		return
-	}
-	messageID, err := uuid.New()
-	if err != nil {
-		dependencyUnavailable(w, r)
-		return
-	}
-	outboxID, err := uuid.New()
-	if err != nil {
-		dependencyUnavailable(w, r)
-		return
-	}
-	imageTag, err := transaction.Exec(ctx, `UPDATE image_upload_candidates SET state = 'attached' WHERE image_id = $1::uuid AND room_id = $2::uuid AND sender_user_id = $3::uuid AND client_message_id = $4::uuid AND state = 'candidate'`, imageID, roomID, principal.UserID, request.clientMessageID)
-	if err != nil || imageTag.RowsAffected() != 1 {
-		dependencyUnavailable(w, r)
-		return
-	}
-	var createdAt time.Time
-	err = transaction.QueryRow(ctx, `
-		INSERT INTO messages (message_id, room_id, seq, sender_user_id, sender_display_name, client_message_id, text, image_id)
-		VALUES ($1::uuid, $2::uuid, $3, $4::uuid, $5, $6::uuid, $7, $8::uuid)
-		RETURNING created_at`, messageID, roomID, seq, principal.UserID, displayName, request.clientMessageID, request.text, imageID).Scan(&createdAt)
-	if err != nil {
-		dependencyUnavailable(w, r)
-		return
-	}
-	if tag, err := transaction.Exec(ctx, `INSERT INTO message_outbox (outbox_id, message_id) VALUES ($1::uuid, $2::uuid)`, outboxID, messageID); err != nil || tag.RowsAffected() != 1 {
-		dependencyUnavailable(w, r)
-		return
-	}
-	if err := transaction.Commit(ctx); err != nil {
-		dependencyUnavailable(w, r)
-		return
-	}
-	httpjson.Write(w, http.StatusCreated, struct {
-		Message  chatmessage.Message `json:"message"`
-		Replayed bool                `json:"replayed"`
-	}{Message: chatmessage.Message{
-		MessageID: messageID, RoomID: roomID, Seq: strconv.FormatInt(seq, 10),
-		Sender:          chatmessage.Sender{UserID: principal.UserID, DisplayName: displayName},
-		ClientMessageID: request.clientMessageID, Text: request.text,
-		Image:     &chatmessage.Image{URL: "/api/v1/rooms/" + roomID + "/messages/" + messageID + "/image", ContentType: processed.ContentType, ByteSize: len(processed.Bytes), Width: processed.Width, Height: processed.Height},
-		CreatedAt: createdAt.UTC().Format(time.RFC3339Nano),
-	}, Replayed: false})
 }
 
 func (h *handler) readMessageImage(w http.ResponseWriter, r *http.Request, roomID, messageID string) {

@@ -101,6 +101,12 @@ func TestRoutingPreservesErrorsAndAuthentication(t *testing.T) {
 		{http.MethodGet, "/api/v1/rooms/not-a-uuid/messages", "ROOM_NOT_FOUND", true, http.StatusNotFound},
 		{http.MethodGet, "/api/v1/rooms/not-a-uuid/messages/not-a-uuid/image", "NOT_FOUND", true, http.StatusNotFound},
 		{http.MethodDelete, "/api/v1/rooms/11111111-1111-4111-8111-111111111111/messages", "INVALID_REQUEST", true, http.StatusMethodNotAllowed},
+		{http.MethodDelete, "/api/v1/rooms/not-a-uuid/messages", "ROOM_NOT_FOUND", true, http.StatusNotFound},
+		{http.MethodDelete, "/api/v1/rooms/11111111-1111-4111-8111-111111111111/messages", "UNAUTHENTICATED", false, http.StatusUnauthorized},
+		{http.MethodDelete, "/api/v1/rooms/11111111-1111-4111-8111-111111111111/messages/22222222-2222-4222-8222-222222222222/image", "INVALID_REQUEST", true, http.StatusMethodNotAllowed},
+		{http.MethodDelete, "/api/v1/rooms/invalid/messages/invalid/image", "NOT_FOUND", true, http.StatusNotFound},
+		{http.MethodGet, "/api/v1/rooms/11111111-1111-4111-8111-111111111111/unknown", "NOT_FOUND", true, http.StatusNotFound},
+		{http.MethodPost, "/api/v1/ws", "INVALID_REQUEST", false, http.StatusMethodNotAllowed},
 		{http.MethodGet, "/api/v1/rooms/", "ROOM_NOT_FOUND", true, http.StatusNotFound},
 	} {
 		t.Run(tc.method+" "+tc.path+tc.code, func(t *testing.T) {
