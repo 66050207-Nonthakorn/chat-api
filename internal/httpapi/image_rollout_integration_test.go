@@ -27,6 +27,7 @@ import (
 	"cloudchat/internal/migrations"
 	"cloudchat/internal/outbox"
 	"cloudchat/internal/testutil"
+	"cloudchat/internal/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -41,11 +42,12 @@ func TestImageRolloutFromSchemaOneAndPrivateStreaming(t *testing.T) {
 	// This isolated schema contains only seeded rooms. Reconstruct schema 1 to
 	// exercise the actual 0002 migration and a running compatibility release.
 	_, err := pool.Exec(ctx, `
+		DROP TABLE room_requests;
 		ALTER TABLE messages DROP CONSTRAINT messages_text_or_image_check;
 		ALTER TABLE messages DROP COLUMN image_id;
 		DROP TABLE image_upload_candidates;
 		ALTER TABLE messages ADD CONSTRAINT messages_text_check CHECK (octet_length(text) BETWEEN 1 AND 4096);
-		DELETE FROM schema_migrations WHERE version = 2;`)
+		DELETE FROM schema_migrations WHERE version IN (2, 3);`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,8 +64,13 @@ func TestImageRolloutFromSchemaOneAndPrivateStreaming(t *testing.T) {
 	}
 	broker := redis.NewClient(opts)
 	t.Cleanup(func() { _ = broker.Close() })
-	worker := outbox.NewWorker(pool, broker, config.EnvironmentLocal)
-	subscriber := broker.Subscribe(ctx, message.EventChannel(string(config.EnvironmentLocal)))
+	testID, err := uuid.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventEnvironment := config.Environment("image-rollout-" + testID)
+	worker := outbox.NewWorker(pool, broker, eventEnvironment)
+	subscriber := broker.Subscribe(ctx, message.EventChannel(string(eventEnvironment)))
 	defer subscriber.Close()
 	if _, err := subscriber.Receive(ctx); err != nil {
 		t.Fatal(err)

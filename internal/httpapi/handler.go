@@ -106,6 +106,21 @@ func (h *handler) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Path == "/api/v1/rooms" {
+		if r.Method != http.MethodGet && r.Method != http.MethodPost {
+			writeError(w, r, http.StatusMethodNotAllowed, "INVALID_REQUEST", "Method not allowed", false, nil)
+			return
+		}
+		if _, ok := requirePrincipal(w, r); !ok {
+			return
+		}
+		if r.Method == http.MethodPost {
+			h.createRoom(w, r)
+		} else {
+			h.listRooms(w, r)
+		}
+		return
+	}
+	if r.URL.Path == "/api/v1/users" {
 		if r.Method != http.MethodGet {
 			writeError(w, r, http.StatusMethodNotAllowed, "INVALID_REQUEST", "Method not allowed", false, nil)
 			return
@@ -113,7 +128,7 @@ func (h *handler) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		if _, ok := requirePrincipal(w, r); !ok {
 			return
 		}
-		h.listRooms(w, r)
+		h.searchUsers(w, r)
 		return
 	}
 	if strings.HasPrefix(r.URL.Path, "/api/v1/rooms/") {
@@ -233,6 +248,10 @@ func safeRouteName(path string) string {
 		return "api.message.image"
 	case path == "/api/v1/rooms":
 		return "api.rooms"
+	case path == "/api/v1/users":
+		return "api.users"
+	case strings.HasPrefix(path, "/api/v1/rooms/") && strings.HasSuffix(path, "/members"):
+		return "api.room.members"
 	case strings.HasPrefix(path, "/api/v1/rooms/") && strings.HasSuffix(path, "/sync"):
 		return "api.room.sync"
 	case strings.HasPrefix(path, "/api/v1/rooms/") && strings.HasSuffix(path, "/messages"):
@@ -275,6 +294,15 @@ func (h *handler) serveRoom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch parts[1] {
+	case "members":
+		switch r.Method {
+		case http.MethodGet:
+			h.listMembers(w, r, parts[0])
+		case http.MethodPost:
+			h.addMembers(w, r, parts[0])
+		default:
+			writeError(w, r, http.StatusMethodNotAllowed, "INVALID_REQUEST", "Method not allowed", false, nil)
+		}
 	case "messages":
 		switch r.Method {
 		case http.MethodPost:

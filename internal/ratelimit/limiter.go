@@ -17,6 +17,7 @@ type Operation string
 const (
 	MessageSend        Operation = "message_send"
 	APIRead            Operation = "api_read"
+	RoomWrite          Operation = "room_write"
 	WebSocketHandshake Operation = "websocket_handshake"
 	WebSocketCommand   Operation = "websocket_command"
 )
@@ -40,6 +41,7 @@ type Limiter struct {
 var policies = map[Operation]policy{
 	MessageSend:        newPolicy(5, 10),
 	APIRead:            newPolicy(20, 40),
+	RoomWrite:          newPolicy(1, 10),
 	WebSocketHandshake: newPolicy(10.0/60.0, 5),
 	WebSocketCommand:   newPolicy(5, 10),
 }

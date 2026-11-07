@@ -18,7 +18,7 @@ func Version(ctx context.Context, q queryer) (int, error) {
 }
 
 // CheckVersion is explicit: schema 1 supports text during the compatibility
-// rollout; schema 2 also supports images. Unknown future schemas fail closed.
+// rollout; schemas 2 and 3 also support images. Unknown future schemas fail closed.
 func CheckVersion(version int, imageSends bool) error {
 	if version < 1 || version > CurrentVersion || (imageSends && version < 2) {
 		return fmt.Errorf("unsupported database schema %d", version)

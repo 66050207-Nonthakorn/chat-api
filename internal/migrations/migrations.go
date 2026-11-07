@@ -11,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const CurrentVersion = 2
+const CurrentVersion = 3
 
 const advisoryLockKey int64 = 1380207954
 

@@ -44,13 +44,15 @@ func (h *handler) listRooms(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := queryContext(r)
 	defer cancel()
 	rows, err := h.pool.Query(ctx, `
-		SELECT r.room_id::text, r.kind, r.title,
+		SELECT r.room_id::text, r.kind,
+		       CASE WHEN r.kind = 'dm' THEN COALESCE(peer.display_name, r.title) ELSE r.title END,
 		       CASE WHEN r.kind = 'dm' THEN 'member'
 		            WHEN r.owner_user_id = $1::uuid THEN 'owner'
 		            ELSE rm.member_role END,
 		       r.last_seq::text
 		FROM rooms r
 		JOIN room_memberships rm ON rm.room_id = r.room_id AND rm.user_id = $1::uuid
+		LEFT JOIN app_users peer ON r.kind = 'dm' AND peer.user_id = CASE WHEN r.dm_user_low = $1::uuid THEN r.dm_user_high ELSE r.dm_user_low END
 		WHERE ($2::uuid IS NULL OR r.room_id > $2::uuid)
 		ORDER BY r.room_id ASC
 		LIMIT $3`, principal.UserID, afterRoomID, limit+1)

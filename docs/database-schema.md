@@ -138,6 +138,10 @@ FK (room_id,owner_user_id) → room_memberships(room_id,user_id) แบบ DEFER
 
 ไม่มี updated_at/deleted_at เพราะข้อความ v1 immutable; จำกัด role runtime ไม่ให้ UPDATE/DELETE messages ไม่ใช้ ON CONFLICT DO UPDATE แก้เนื้อหาเมื่อรหัสซ้ำ
 
+### room_requests
+
+Migration 0003 เก็บ request ID ที่สำเร็จแล้วสำหรับการสร้างกลุ่มและเพิ่มสมาชิก โดย unique ตามผู้ใช้ operation และ request ID พร้อม hash ของเนื้อหาที่ normalize แล้วและ room ID เพื่อให้ retry ไม่สร้างห้องซ้ำหรือเพิ่มสมาชิกที่ถูกลบกลับเข้าไปอีก รายการล้มเหลวไม่ถูกบันทึก
+
 ### image_upload_candidates
 
 ตารางนี้เป็น ledger ของ object ที่อาจยังไม่ถูกผูกกับข้อความและใช้ cleanup แบบ retry ได้ แต่ละ upload attempt ใช้ image_id/object_key ใหม่

@@ -93,6 +93,14 @@ CREATE TABLE room_memberships (
     PRIMARY KEY (room_id, user_id)
 );
 CREATE INDEX room_memberships_user_room_idx ON room_memberships(user_id, room_id);
+CREATE TABLE room_requests (
+    user_id uuid NOT NULL REFERENCES app_users(user_id),
+    operation text NOT NULL CHECK (operation IN ('create_group', 'add_members')),
+    request_id uuid NOT NULL,
+    request_hash bytea NOT NULL CHECK (octet_length(request_hash) = 32),
+    room_id uuid NOT NULL REFERENCES rooms(room_id),
+    PRIMARY KEY (user_id, operation, request_id)
+);
 ALTER TABLE rooms ADD CONSTRAINT rooms_owner_membership_fk
     FOREIGN KEY (room_id, owner_user_id)
     REFERENCES room_memberships(room_id, user_id)

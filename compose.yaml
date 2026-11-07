@@ -27,7 +27,7 @@ services:
 
   media:
     image: chrislusf/seaweedfs:4.52
-    command: ["mini", "-dir=/data", "-ip.bind=0.0.0.0", "-s3.port=8333"]
+    command: ["mini", "-dir=/data", "-s3.port=8333"]
     environment:
       AWS_ACCESS_KEY_ID: admin
       AWS_SECRET_ACCESS_KEY: secret

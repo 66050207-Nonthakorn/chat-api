@@ -8,7 +8,8 @@ func TestSchemaCompatibilityDuringImageRollout(t *testing.T) {
 		images, allowed bool
 	}{
 		{0, false, false}, {1, false, true}, {1, true, false},
-		{2, false, true}, {2, true, true}, {3, false, false}, {3, true, false},
+		{2, false, true}, {2, true, true}, {3, false, true}, {3, true, true},
+		{4, false, false}, {4, true, false},
 	} {
 		if got := CheckVersion(tc.version, tc.images) == nil; got != tc.allowed {
 			t.Errorf("version=%d images=%v allowed=%v want=%v", tc.version, tc.images, got, tc.allowed)
