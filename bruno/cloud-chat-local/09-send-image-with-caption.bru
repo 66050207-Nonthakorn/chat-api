@@ -25,7 +25,7 @@ script:post-response {
     const msg = res.getBody().message;
     bru.setVar("sentImageUrl", msg.image.url);
     bru.setVar("sentImageMessageId", msg.message_id);
-    bru.setVar("imageBeforeSeq", (BigInt(msg.seq) - 1n).toString());
+    bru.setVar("imageBeforeSeq", (BigInt(msg.seq) - BigInt(1)).toString());
   }
 }
 
