@@ -1,0 +1,22 @@
+meta {
+  name: 18-search-demo-c
+  type: http
+  seq: 18
+}
+
+get {
+  url: {{baseUrl}}/api/v1/users?q=Demo%20C
+  body: none
+  auth: none
+}
+
+headers {
+  X-Local-Test-User-ID: {{userAId}}
+}
+
+tests {
+  test("directory finds active Demo C", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().items.some(user => user.user_id === bru.getEnvVar("userCId") && user.display_name === "Demo C")).to.equal(true);
+  });
+}

@@ -1,0 +1,37 @@
+meta {
+  name: 19-start-dm
+  type: http
+  seq: 19
+}
+
+post {
+  url: {{baseUrl}}/api/v1/rooms
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+  X-Local-Test-User-ID: {{userAId}}
+}
+
+body:json {
+  {
+    "kind": "dm",
+    "user_id": "{{userCId}}"
+  }
+}
+
+script:post-response {
+  if ([200, 201].includes(res.getStatus())) {
+    bru.setVar("startedDmRoomId", res.getBody().room_id);
+  }
+}
+
+tests {
+  test("start or reopen the DM", function () {
+    expect([200, 201]).to.include(res.getStatus());
+    expect(res.getBody().room_id).to.be.a("string").and.not.empty;
+    expect(res.getBody().replayed).to.equal(res.getStatus() === 200);
+  });
+}

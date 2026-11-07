@@ -1,0 +1,31 @@
+meta {
+  name: 20-reopen-dm
+  type: http
+  seq: 20
+}
+
+post {
+  url: {{baseUrl}}/api/v1/rooms
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+  X-Local-Test-User-ID: {{userAId}}
+}
+
+body:json {
+  {
+    "kind": "dm",
+    "user_id": "{{userCId}}"
+  }
+}
+
+tests {
+  test("reopening returns the same DM", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().replayed).to.equal(true);
+    expect(res.getBody().room_id).to.equal(bru.getVar("startedDmRoomId"));
+  });
+}

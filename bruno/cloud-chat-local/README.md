@@ -3,7 +3,7 @@
 Open this folder as a collection in Bruno and select the `local` environment.
 Start the API and worker using the local setup in the repository README first.
 
-Start all three dependencies with `docker compose up -d --wait postgres valkey media`, then run migrations and seed before starting API and worker. Bruno does not create rooms. Go does not load `.env` automatically; set the shell environment as shown in the repository README. This collection expects schema 2 for image requests and image sending enabled (the local default).
+Start all three dependencies with `docker compose up -d --wait postgres valkey media`, then run migrations and seed before starting API and worker. Go does not load `.env` automatically; set the shell environment as shown in the repository README. This collection expects schema 3 and image sending enabled (the local default).
 
 The HTTP smoke flow is:
 
@@ -50,6 +50,27 @@ Uploads are bounded to 5 MiB (6 MiB total multipart), one pipeline per API task,
 
 See [image flow and rollout documentation](../../docs/image-messages.md) and [shared edge requirements](../../infra/shared-edge/README.md). Bruno's local adapter does not validate production cookies, CSRF, CloudFront, or AWS IAM.
 
+## DM and group management
+
+Requests 18–26 need an additional active user as a DM recipient. After running the regular seed, create this local fixture once from the repository root:
+
+```powershell
+docker compose exec -T postgres psql -U chat -d chat -c "INSERT INTO app_users (user_id, display_name) VALUES ('55555555-5555-4555-8555-555555555555', 'Demo C') ON CONFLICT (user_id) DO NOTHING;"
+```
+
+This fixture is only a recipient; local test authentication remains limited to Demo A and Demo B. The first run creates a DM between A and C; later runs reopen the same DM. Run requests 18–26 in order in the same Bruno session:
+
+| Request | Expected behavior |
+| --- | --- |
+| 18 search Demo C | Finds the active recipient in the directory |
+| 19–20 start and reopen DM | 201 on first creation or 200 if it exists; retry returns the same room |
+| 21–22 create and retry group | Creates an owner-only group or replays the original creation; saves its room ID |
+| 23–24 add and retry member | Adds Demo B and replays the same request without adding another membership |
+| 25 list members as Demo B | Shows Demo A as owner and Demo B as a member |
+| 26 member cannot add | Demo B cannot add Demo C; returns 404 |
+
+The group room ID and DM room ID are runtime variables saved by 21 and 19; rerun those requests before dependent requests after restarting Bruno. Keep `groupCreateRequestId`, `groupAddRequestId`, and their request bodies unchanged for retries. To create a separate group, generate fresh UUIDs for both IDs. Changing the title while reusing the creation ID yields a 409 conflict. Existing group membership is retained between runs; the collection does not remove users or delete groups.
+
 From this collection directory, run the HTTP requests with the pinned CLI (WebSocket 08 is excluded):
 
 ```powershell
@@ -63,4 +84,4 @@ Offline syntax checks, from the repository root:
 npm.cmd exec --yes --package=@usebruno/cli@4.1.0 -- node .scratch/image-messages/validate-bruno.cjs
 ```
 
-All 17 request files and the environment were parsed using Bruno 4.1.0; embedded JavaScript and fixture paths were validated. The updated Bruno HTTP flow has not yet been executed against the API because the Docker engine endpoint was unavailable during this documentation update. This is separate from the passing Go/backend integration evidence in ticket 03.
+The offline check parses the requests and environment and validates embedded JavaScript and fixture paths. It does not execute API calls.

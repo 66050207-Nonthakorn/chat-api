@@ -1,0 +1,39 @@
+meta {
+  name: 21-create-group
+  type: http
+  seq: 21
+}
+
+post {
+  url: {{baseUrl}}/api/v1/rooms
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+  X-Local-Test-User-ID: {{userAId}}
+}
+
+body:json {
+  {
+    "kind": "group",
+    "title": "{{newGroupTitle}}",
+    "member_ids": [],
+    "request_id": "{{groupCreateRequestId}}"
+  }
+}
+
+script:post-response {
+  if ([200, 201].includes(res.getStatus())) {
+    bru.setVar("createdGroupRoomId", res.getBody().room_id);
+  }
+}
+
+tests {
+  test("create or replay the group", function () {
+    expect([200, 201]).to.include(res.getStatus());
+    expect(res.getBody().room_id).to.be.a("string").and.not.empty;
+    expect(res.getBody().replayed).to.equal(res.getStatus() === 200);
+  });
+}

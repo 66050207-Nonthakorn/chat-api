@@ -1,0 +1,24 @@
+meta {
+  name: 25-list-group-members
+  type: http
+  seq: 25
+}
+
+get {
+  url: {{baseUrl}}/api/v1/rooms/{{createdGroupRoomId}}/members
+  body: none
+  auth: none
+}
+
+headers {
+  X-Local-Test-User-ID: {{userBId}}
+}
+
+tests {
+  test("Demo B can see the owner and their own membership", function () {
+    expect(res.getStatus()).to.equal(200);
+    const members = res.getBody().items;
+    expect(members.filter(member => member.user_id === bru.getEnvVar("userAId") && member.role === "owner")).to.have.length(1);
+    expect(members.filter(member => member.user_id === bru.getEnvVar("userBId") && member.role === "member")).to.have.length(1);
+  });
+}

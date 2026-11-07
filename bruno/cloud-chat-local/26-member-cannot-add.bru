@@ -1,0 +1,30 @@
+meta {
+  name: 26-member-cannot-add
+  type: http
+  seq: 26
+}
+
+post {
+  url: {{baseUrl}}/api/v1/rooms/{{createdGroupRoomId}}/members
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+  X-Local-Test-User-ID: {{userBId}}
+}
+
+body:json {
+  {
+    "member_ids": ["{{userCId}}"],
+    "request_id": "{{unauthorizedAddRequestId}}"
+  }
+}
+
+tests {
+  test("ordinary members cannot add people", function () {
+    expect(res.getStatus()).to.equal(404);
+    expect(res.getBody().error.code).to.equal("ROOM_NOT_FOUND");
+  });
+}

@@ -1,0 +1,31 @@
+meta {
+  name: 24-retry-add-group-member
+  type: http
+  seq: 24
+}
+
+post {
+  url: {{baseUrl}}/api/v1/rooms/{{createdGroupRoomId}}/members
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+  X-Local-Test-User-ID: {{userAId}}
+}
+
+body:json {
+  {
+    "member_ids": ["{{userBId}}"],
+    "request_id": "{{groupAddRequestId}}"
+  }
+}
+
+tests {
+  test("retry does not add the member twice", function () {
+    expect(res.getStatus()).to.equal(200);
+    expect(res.getBody().replayed).to.equal(true);
+    expect(res.getBody().room_id).to.equal(bru.getVar("createdGroupRoomId"));
+  });
+}
