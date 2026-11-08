@@ -92,11 +92,17 @@ func TestHandlerMissingDependenciesPreserveHealthAndFailClosedResponses(t *testi
 
 func TestRoutingPreservesErrorsAndAuthentication(t *testing.T) {
 	handler := httpapi.NewHandler(config.Config{Environment: config.EnvironmentLocal}, nil, httpapi.Options{})
+	messages := "/api/v1/rooms/" + demo.GroupRoomID + "/messages"
+	image := messages + "/22222222-2222-4222-8222-222222222222/image"
 	for _, tc := range []struct {
 		method, path, code string
 		authenticated      bool
 		status             int
 	}{
+		{http.MethodPost, messages, "UNAUTHENTICATED", false, http.StatusUnauthorized},
+		{http.MethodPost, messages, "UNSUPPORTED_MEDIA_TYPE", true, http.StatusUnsupportedMediaType},
+		{http.MethodGet, image, "UNAUTHENTICATED", false, http.StatusUnauthorized},
+		{http.MethodGet, image, "DEPENDENCY_UNAVAILABLE", true, http.StatusServiceUnavailable},
 		{http.MethodGet, "/api/v1/rooms/not-a-uuid/messages", "UNAUTHENTICATED", false, http.StatusUnauthorized},
 		{http.MethodGet, "/api/v1/rooms/not-a-uuid/messages", "ROOM_NOT_FOUND", true, http.StatusNotFound},
 		{http.MethodGet, "/api/v1/rooms/not-a-uuid/messages/not-a-uuid/image", "NOT_FOUND", true, http.StatusNotFound},

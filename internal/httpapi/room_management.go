@@ -272,7 +272,8 @@ func (h *handler) createDM(w http.ResponseWriter, r *http.Request, user, peer st
 	httpjson.Write(w, status, roomResult{created, replay})
 }
 
-func (h *handler) addMembers(w http.ResponseWriter, r *http.Request, roomID string) {
+func (h *handler) addMembers(w http.ResponseWriter, r *http.Request) {
+	roomID := r.PathValue("roomID")
 	var req addMembersRequest
 	if !decodeManagement(w, r, &req) {
 		return
@@ -386,7 +387,8 @@ type groupMember struct {
 	Active      bool   `json:"is_active"`
 }
 
-func (h *handler) listMembers(w http.ResponseWriter, r *http.Request, roomID string) {
+func (h *handler) listMembers(w http.ResponseWriter, r *http.Request) {
+	roomID := r.PathValue("roomID")
 	p, _ := auth.PrincipalFromContext(r.Context())
 	ctx, cancel := queryContext(r)
 	defer cancel()

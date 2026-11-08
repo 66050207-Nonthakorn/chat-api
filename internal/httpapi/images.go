@@ -239,7 +239,8 @@ func readImageSendRequest(ctx context.Context, w http.ResponseWriter, r *http.Re
 	return request, nil
 }
 
-func (h *handler) readMessageImage(w http.ResponseWriter, r *http.Request, roomID, messageID string) {
+func (h *handler) readMessageImage(w http.ResponseWriter, r *http.Request) {
+	roomID, messageID := r.PathValue("roomID"), r.PathValue("messageID")
 	if h.images == nil {
 		dependencyUnavailable(w, r)
 		return

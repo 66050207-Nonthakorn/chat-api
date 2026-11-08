@@ -10,8 +10,51 @@ import (
 	"sync/atomic"
 	"time"
 
+	"cloudchat/internal/auth"
 	"cloudchat/internal/requestid"
+	"cloudchat/internal/uuid"
+	"github.com/gin-gonic/gin"
 )
+
+func requireAuthentication(c *gin.Context) {
+	if !requirePrincipal(c.Writer, c.Request) {
+		c.Abort()
+		return
+	}
+	c.Next()
+}
+
+func requirePrincipal(w http.ResponseWriter, r *http.Request) bool {
+	if _, ok := auth.PrincipalFromContext(r.Context()); !ok {
+		writeError(w, r, http.StatusUnauthorized, "UNAUTHENTICATED", "Authentication required", false, nil)
+		return false
+	}
+	return true
+}
+
+// Bind validated Gin parameters for the net/http handlers.
+func bindRoomPath(c *gin.Context) {
+	roomID := c.Param("roomID")
+	if !uuid.IsCanonical(roomID) {
+		writeRoomNotFound(c.Writer, c.Request)
+		c.Abort()
+		return
+	}
+	c.Request.SetPathValue("roomID", roomID)
+	c.Next()
+}
+
+func bindImagePath(c *gin.Context) {
+	roomID, messageID := c.Param("roomID"), c.Param("messageID")
+	if !uuid.IsCanonical(roomID) || !uuid.IsCanonical(messageID) {
+		writeError(c.Writer, c.Request, http.StatusNotFound, "NOT_FOUND", "Resource not found", false, nil)
+		c.Abort()
+		return
+	}
+	c.Request.SetPathValue("roomID", roomID)
+	c.Request.SetPathValue("messageID", messageID)
+	c.Next()
+}
 
 func requestMetadata(next http.Handler, logger *slog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

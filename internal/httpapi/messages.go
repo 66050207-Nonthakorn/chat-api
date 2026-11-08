@@ -39,12 +39,9 @@ type sendMessageRequest struct {
 	Text            string `json:"text"`
 }
 
-func (h *handler) sendMessage(w http.ResponseWriter, r *http.Request, roomID string) {
-	principal, ok := auth.PrincipalFromContext(r.Context())
-	if !ok {
-		writeError(w, r, http.StatusUnauthorized, "UNAUTHENTICATED", "Authentication required", false, nil)
-		return
-	}
+func (h *handler) sendMessage(w http.ResponseWriter, r *http.Request) {
+	roomID := r.PathValue("roomID")
+	principal, _ := auth.PrincipalFromContext(r.Context())
 	if mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err == nil && mediaType == "multipart/form-data" {
 		h.sendImageMessage(w, r, roomID, principal)
 		return
@@ -174,7 +171,8 @@ func invalidSequenceQuery(w http.ResponseWriter, r *http.Request, field string) 
 	writeError(w, r, http.StatusBadRequest, "INVALID_CURSOR", "The sequence cursor is invalid", false, []errorDetail{{Field: field, Code: "invalid"}})
 }
 
-func (h *handler) messageHistory(w http.ResponseWriter, r *http.Request, roomID string) {
+func (h *handler) messageHistory(w http.ResponseWriter, r *http.Request) {
+	roomID := r.PathValue("roomID")
 	principal, _ := auth.PrincipalFromContext(r.Context())
 	query, ok := parseQuery(w, r)
 	if !ok {
@@ -251,7 +249,8 @@ func (h *handler) messageHistory(w http.ResponseWriter, r *http.Request, roomID 
 	}{Items: items, NextBeforeSeq: nextBeforeSeq, HasMore: hasMore})
 }
 
-func (h *handler) syncMessages(w http.ResponseWriter, r *http.Request, roomID string) {
+func (h *handler) syncMessages(w http.ResponseWriter, r *http.Request) {
+	roomID := r.PathValue("roomID")
 	principal, _ := auth.PrincipalFromContext(r.Context())
 	query, ok := parseQuery(w, r)
 	if !ok {
