@@ -57,6 +57,9 @@ func requestRateLimitOperation(r *http.Request) (ratelimit.Operation, bool) {
 	if r.Method == http.MethodPost && (r.URL.Path == "/api/v1/rooms" || (strings.HasPrefix(r.URL.Path, "/api/v1/rooms/") && strings.HasSuffix(r.URL.Path, "/members"))) {
 		return ratelimit.RoomWrite, true
 	}
+	if (r.Method == http.MethodPatch || r.Method == http.MethodDelete) && strings.HasPrefix(r.URL.Path, "/api/v1/rooms/") {
+		return ratelimit.RoomWrite, true
+	}
 	if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/") {
 		return ratelimit.APIRead, true
 	}
