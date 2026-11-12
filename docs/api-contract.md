@@ -160,7 +160,6 @@ X-CSRF-Token: opaque-session-bound-value
 
 สำหรับรูป ส่ง `multipart/form-data` ไปยัง path เดิม โดยมี `client_message_id`, `image` หนึ่งไฟล์ และ `text` ซึ่งไม่บังคับ (caption ว่างได้) รูปต้นทางรับ JPEG, PNG หรือ WebP ไม่เกิน 5 MiB; request รวมไม่เกิน 6 MiB Backend ตรวจชนิดจริงและส่งกลับเฉพาะรูปที่ปรับ orientation, ลดด้านยาวไม่เกิน 2,560 px และ encode ใหม่เพื่อตัด metadata รูปที่ส่งแล้วมี `image` เพิ่มใน Message: `{ "url": "/api/v1/rooms/{room_id}/messages/{message_id}/image", "content_type": "image/jpeg หรือ image/png", "byte_size": 1234, "width": 800, "height": 600 }` URL นี้เป็น route ที่ต้องมี session และเป็นสมาชิกห้องขณะอ่าน; response ไม่เปิดเผย object key, ส่ง `Cache-Control: no-store` และ `X-Content-Type-Options: nosniff`
 
-ใน production `IMAGE_MESSAGES_ENABLED` ปิดไว้จน API และ worker รุ่นที่รองรับ image metadata deploy ครบแล้ว จากนั้นเปิดผ่าน Terraform `enable_image_messages` แยกหลัง rollout
 
 Upload ใช้เวลาได้สูงสุด 45 วินาทีและมี read deadline จริง; API task รับ image pipeline พร้อมกันหนึ่งคำขอ หากเต็มตอบ 429 `IMAGE_UPLOAD_BUSY` พร้อม `Retry-After: 1` โดยไม่รอคิว เมื่ออ่าน body หมดเวลาตอบ 408 `UPLOAD_TIMEOUT` ให้ retry ด้วย client_message_id เดิม Download ตรวจสิทธิ์และขนาด object ก่อน stream โดยจำกัดเวลา 10 วินาที; หากขาดกลางทางให้ retry เฉพาะ GET รูป ไม่สร้างข้อความใหม่
 

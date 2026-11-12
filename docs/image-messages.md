@@ -49,9 +49,9 @@ HTTP response, history, sync และ live event ใช้ optional `image` เ
 
 ## Rollout AWS
 
-1. คง `enable_image_messages=false`; deploy API/worker รุ่นที่รองรับ schema 1 และ 2 ให้ครบก่อน migration รุ่นเก่าที่รองรับเฉพาะ schema 1 ไม่ใช่ rollback target หลัง migration
+1. deploy API/worker รุ่นที่รองรับ schema 1 และ 2 ให้ครบก่อน migration รุ่นเก่าที่รองรับเฉพาะ schema 1 ไม่ใช่ rollback target หลัง migration
 2. รัน migration 0002 แบบควบคุม ตรวจ readiness, text send/replay/history/sync และ outbox จากนั้นตรวจ shared edge configuration
-3. เปิด `enable_image_messages=true` แยกภายหลัง ตรวจ upload, protected read และ live delivery ผ่าน origin จริง
+3. ตรวจ upload, protected read และ live delivery ผ่าน origin จริง
 
 รายละเอียดอยู่ใน [release guide](../infra/README.md) และ [shared CloudFront configuration/checker](../infra/shared-edge/README.md) API/worker อยู่ private subnet, S3 เป็น private bucket และ IAM จำกัด media prefix การ deploy อาจตัด upload เมื่อครบ drain budget; client ใช้รหัสเดิม retry
 

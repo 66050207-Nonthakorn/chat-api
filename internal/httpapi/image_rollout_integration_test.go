@@ -138,7 +138,6 @@ func TestImageRolloutFromSchemaOneAndPrivateStreaming(t *testing.T) {
 	request(api, "GET", "/health/ready", demo.UserAID, "", nil, 200)
 	request(api, "POST", path, demo.UserAID, "application/json", strings.NewReader(textBody), 200)
 
-	cfg.ImageMessagesEnabled = true
 	imagesAPI := httptest.NewServer(NewHandler(cfg, pool, Options{Readiness: readiness, Images: store, ImageUploadSlots: uploadSlots}))
 	defer imagesAPI.Close()
 	t.Cleanup(func() {
@@ -235,7 +234,7 @@ func TestImageUploadAdmissionSharedAcrossHandlers(t *testing.T) {
 		}
 		return errors.New("test storage failure")
 	}}
-	cfg := config.Config{Environment: config.EnvironmentLocal, EnableLocalTestIdentity: true, ImageMessagesEnabled: true}
+	cfg := config.Config{Environment: config.EnvironmentLocal, EnableLocalTestIdentity: true}
 	newServer := func(slots chan struct{}) *httptest.Server {
 		server := httptest.NewServer(NewHandler(cfg, pool, Options{Images: store, ImageUploadSlots: slots}))
 		t.Cleanup(server.Close)
