@@ -18,6 +18,7 @@ import (
 	"cloudchat/internal/apierror"
 	"cloudchat/internal/config"
 	"cloudchat/internal/httpjson"
+	"cloudchat/internal/ratelimit"
 	"cloudchat/internal/uuid"
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/jackc/pgx/v5"
@@ -35,13 +36,21 @@ const (
 )
 
 type Server struct {
-	config       config.Config
-	pool         *pgxpool.Pool
-	sessionRules SessionRules
-	oauth        oauth2.Config
-	verifier     *oidc.IDTokenVerifier
-	keys         keyRing
-	client       *http.Client
+	config        config.Config
+	pool          *pgxpool.Pool
+	sessionRules  SessionRules
+	oauth         oauth2.Config
+	verifier      *oidc.IDTokenVerifier
+	keys          keyRing
+	client        *http.Client
+	publicLimiter interface {
+		Allow(context.Context, ratelimit.Operation, string) (ratelimit.Decision, error)
+	}
+}
+
+// SetPublicLimiter enables distributed throttling for password endpoints.
+func (s *Server) SetPublicLimiter(limiter *ratelimit.Limiter) {
+	s.publicLimiter = limiter
 }
 
 type tokenBundle struct {
@@ -190,6 +199,12 @@ func (s *Server) Middleware(next http.Handler) http.Handler {
 // ServeHTTP handles the backend-owned authentication and session endpoints.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
+	case "/auth/password/login", "/auth/signup", "/auth/signup/confirm", "/auth/signup/resend":
+		if r.Method != http.MethodPost {
+			methodNotAllowed(w)
+			return
+		}
+		s.passwordAuth(w, r)
 	case "/auth/login":
 		if r.Method != http.MethodGet {
 			methodNotAllowed(w)

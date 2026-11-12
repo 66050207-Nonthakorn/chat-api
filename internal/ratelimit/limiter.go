@@ -20,6 +20,8 @@ const (
 	RoomWrite          Operation = "room_write"
 	WebSocketHandshake Operation = "websocket_handshake"
 	WebSocketCommand   Operation = "websocket_command"
+	PublicAuthAccount  Operation = "public_auth_account"
+	PublicAuthGlobal   Operation = "public_auth_global"
 )
 
 type Decision struct {
@@ -44,6 +46,8 @@ var policies = map[Operation]policy{
 	RoomWrite:          newPolicy(1, 10),
 	WebSocketHandshake: newPolicy(10.0/60.0, 5),
 	WebSocketCommand:   newPolicy(5, 10),
+	PublicAuthAccount:  newPolicy(1.0/60.0, 5),
+	PublicAuthGlobal:   newPolicy(1, 100),
 }
 
 const tokenBucketScript = `
