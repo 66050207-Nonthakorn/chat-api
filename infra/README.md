@@ -73,7 +73,7 @@ The root defaults `enable_ecs_services` to `false`, allowing infrastructure and 
 
 ## Backend CI and image artifacts
 
-The root `.github/workflows/backend-ci.yml` runs Go tests against PostgreSQL and Valkey service containers, race tests, `go vet`, command builds, and Docker builds for the API and worker. Actions are pinned to full commit SHAs and the workflow has read-only repository permission. It does not authenticate to AWS or publish, deploy, or apply infrastructure. Its local Docker image IDs identify the tested build contents; they are not registry references and do not imply an AWS release.
+The root `.github/workflows/backend-ci.yml` runs Go tests against PostgreSQL and Valkey service containers, race tests, `go vet`, command builds, and Docker builds for the API and worker. Its local Docker image IDs identify the tested build contents. After verification on `main`, the publish job assumes the demo release role through GitHub OIDC, publishes both images by commit SHA, and writes their registry digests to the run summary. Configure `github_backend_release_subject` in Terraform and set `AWS_BACKEND_RELEASE_ROLE_ARN` as a repository variable. The deployment operator uses the published digests in the Terraform release after any required migration.
 
 For a local clean commit, the platform-specific `build-images` script builds both Linux container targets and verifies the embedded `org.opencontainers.image.revision` label and Docker image ID. From the repository root, run it on Windows with:
 
@@ -148,7 +148,7 @@ If migration fails, leave the compatible service digests running and inspect tas
 
 ECS Fargate's Linux `stopTimeout` has a maximum of 120 seconds; this module configures `SHUTDOWN_GRACE_SECONDS` to at most 25 and sets `stopTimeout` five seconds longer, for a bounded 30-second task stop budget ([ECS task definition parameters](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task_definition_parameters.html)). The application marks readiness unavailable before HTTP drain, sends WebSockets a going-away close, waits for ordinary requests, and has a force-close path at the deadline. The worker stops new claims, finishes or cancels active publishes, then releases any still-owned outbox leases through PostgreSQL under the same configured grace. Clients recover durable messages through the HTTP sync contract after reconnect.
 
-GitHub recommends pinning actions to full commit SHAs as the immutable action reference ([secure use reference](https://docs.github.com/en/actions/reference/security/secure-use)). CI is defined in source, but it has not run in this workspace's GitHub environment. No AWS account, identity, shared network, CI secret shell, or live ECS/RDS/Valkey environment is configured here; no publish, deploy, apply, live rollback, dashboard ingestion, or AWS alarm evaluation is claimed or verified.
+The workflows pin actions to full commit SHAs ([GitHub secure use reference](https://docs.github.com/en/actions/reference/security/secure-use)). Check GitHub Actions for image publication and ECS for deployment status.
 
 ## Non-applying local validation
 
