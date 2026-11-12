@@ -1,8 +1,12 @@
 package auth
 
 import (
+	"bytes"
 	"context"
+	"crypto"
 	"crypto/hmac"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -14,10 +18,12 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"cloudchat/internal/config"
 	"cloudchat/internal/ratelimit"
 	"cloudchat/internal/testutil"
+	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -132,6 +138,91 @@ func TestFindOrCreateIdentityConcurrentAndDisabled(t *testing.T) {
 	}
 	var count int
 	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM user_identities WHERE issuer=$1 AND subject=$2", issuer, subject).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("identity count = %d, error = %v", count, err)
+	}
+}
+
+func TestPasswordLoginVerifiedIdentityAndSession(t *testing.T) {
+	databaseURL := os.Getenv("TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("TEST_DATABASE_URL not configured")
+	}
+	pool := testutil.IsolatedDatabase(t, databaseURL, "password_login_")
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const issuer = "https://cognito-idp.ap-southeast-2.amazonaws.com/pool"
+	cfg := config.Config{
+		Environment: config.EnvironmentProduction, AppOrigin: "https://chat.example.com",
+		OIDCIssuer: issuer, OIDCClientID: "client", OIDCClientSecret: "secret",
+		SessionEncryptionCurrentKeyID: "key", SessionEncryptionKeys: map[string][]byte{"key": []byte("0123456789abcdef0123456789abcdef")},
+	}
+	keys, err := newKeyRing(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifiedEmail := true
+	server := &Server{
+		config: cfg, pool: pool, keys: keys, sessionRules: NewSessionRules(pool),
+		publicLimiter: allowPublicAuth{},
+		verifier:      oidc.NewVerifier(issuer, &oidc.StaticKeySet{PublicKeys: []crypto.PublicKey{&privateKey.PublicKey}}, &oidc.Config{ClientID: "client"}),
+	}
+	server.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`))
+		claims, _ := json.Marshal(map[string]any{
+			"iss": issuer, "sub": "new-user", "aud": "client",
+			"iat": time.Now().Add(-time.Minute).Unix(), "exp": time.Now().Add(time.Hour).Unix(),
+			"token_use": "id", "email": "alice@example.com", "email_verified": verifiedEmail, "name": "Alice",
+		})
+		unsigned := header + "." + base64.RawURLEncoding.EncodeToString(claims)
+		digest := sha256.Sum256([]byte(unsigned))
+		sig, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, digest[:])
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload, _ := json.Marshal(map[string]any{"AuthenticationResult": map[string]any{
+			"IdToken":     unsigned + "." + base64.RawURLEncoding.EncodeToString(sig),
+			"AccessToken": "access-token", "RefreshToken": "refresh-token", "ExpiresIn": 3600,
+		}})
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(payload))}, nil
+	})}
+	login := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/auth/password/login", strings.NewReader(`{"email":"alice@example.com","password":"Password1!"}`))
+		req.Header.Set("Origin", cfg.AppOrigin)
+		req.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		server.ServeHTTP(response, req)
+		return response
+	}
+	verifiedEmail = false
+	if got := login().Code; got != http.StatusUnauthorized {
+		t.Fatalf("unverified login = %d", got)
+	}
+	verifiedEmail = true
+	response := login()
+	if response.Code != http.StatusOK {
+		t.Fatalf("verified login = %d, %s", response.Code, response.Body)
+	}
+	cookies := response.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != productionSessionCookie || !cookies[0].HttpOnly || !cookies[0].Secure {
+		t.Fatalf("unexpected session cookie: %+v", cookies)
+	}
+	if strings.Contains(response.Body.String(), "access-token") || strings.Contains(response.Body.String(), "refresh-token") {
+		t.Fatal("response exposed Cognito tokens")
+	}
+	sessionRequest := httptest.NewRequest(http.MethodGet, "/api/v1/session", nil)
+	sessionRequest.AddCookie(cookies[0])
+	sessionResponse := httptest.NewRecorder()
+	server.Middleware(server).ServeHTTP(sessionResponse, sessionRequest)
+	if sessionResponse.Code != http.StatusOK || !strings.Contains(sessionResponse.Body.String(), "Alice") {
+		t.Fatalf("session = %d, %s", sessionResponse.Code, sessionResponse.Body)
+	}
+	if got := login().Code; got != http.StatusOK {
+		t.Fatalf("repeat login = %d", got)
+	}
+	var count int
+	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM user_identities WHERE issuer = $1 AND subject = $2", issuer, "new-user").Scan(&count); err != nil || count != 1 {
 		t.Fatalf("identity count = %d, error = %v", count, err)
 	}
 }
