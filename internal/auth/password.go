@@ -171,12 +171,11 @@ func (s *Server) passwordAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var claims struct {
-		Email         string `json:"email"`
-		EmailVerified bool   `json:"email_verified"`
-		Name          string `json:"name"`
-		TokenUse      string `json:"token_use"`
+		Email    string `json:"email"`
+		Name     string `json:"name"`
+		TokenUse string `json:"token_use"`
 	}
-	if idToken.Claims(&claims) != nil || claims.TokenUse != "id" || !claims.EmailVerified || !strings.EqualFold(claims.Email, input.Email) || idToken.Subject == "" {
+	if idToken.Claims(&claims) != nil || claims.TokenUse != "id" || !strings.EqualFold(claims.Email, input.Email) || idToken.Subject == "" {
 		apierror.Write(w, http.StatusUnauthorized, "LOGIN_FAILED", "Login could not be completed", false, nil)
 		return
 	}
