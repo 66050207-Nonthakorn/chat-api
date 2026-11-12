@@ -73,7 +73,7 @@ The root defaults `enable_ecs_services` to `false`, allowing infrastructure and 
 
 ## Backend CI and image artifacts
 
-The root `.github/workflows/backend-ci.yml` runs Go tests against PostgreSQL and Valkey service containers, race tests, `go vet`, command builds, and Docker builds for the API and worker. Actions are pinned to full commit SHAs and the workflow has read-only repository permission. It does not authenticate to AWS or publish, deploy, or apply infrastructure. Its local Docker image IDs identify the tested build contents; they are not registry references and do not imply an AWS release.
+The root `.github/workflows/backend-ci.yml` runs Go tests against PostgreSQL and Valkey service containers, race tests, `go vet`, command builds, and Docker builds for the API and worker. Its local Docker image IDs identify the tested build contents. After verification on `main`, the publish job assumes the demo release role through GitHub OIDC, publishes both images by commit SHA, and writes their registry digests to the run summary. Configure `github_backend_release_subject` in Terraform and set `AWS_BACKEND_RELEASE_ROLE_ARN` as a repository variable. The deployment operator uses the published digests in the Terraform release after any required migration.
 
 For a local clean commit, the platform-specific `build-images` script builds both Linux container targets and verifies the embedded `org.opencontainers.image.revision` label and Docker image ID. From the repository root, run it on Windows with:
 
