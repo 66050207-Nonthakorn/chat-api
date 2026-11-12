@@ -39,7 +39,6 @@ type Config struct {
 	ImageEndpoint                 string
 	ImageAccessKey                string
 	ImageSecretKey                string
-	ImageMessagesEnabled          bool
 	ShutdownGrace                 time.Duration
 }
 
@@ -106,16 +105,6 @@ func load(apiProcess bool) (Config, error) {
 	cfg.ImageEndpoint = strings.TrimSpace(os.Getenv("IMAGE_ENDPOINT"))
 	cfg.ImageAccessKey = strings.TrimSpace(os.Getenv("IMAGE_ACCESS_KEY"))
 	cfg.ImageSecretKey = strings.TrimSpace(os.Getenv("IMAGE_SECRET_KEY"))
-	enableImageMessages := strings.TrimSpace(os.Getenv("IMAGE_MESSAGES_ENABLED"))
-	if enableImageMessages == "" {
-		cfg.ImageMessagesEnabled = cfg.Environment == EnvironmentLocal
-	} else {
-		enabled, err := strconv.ParseBool(enableImageMessages)
-		if err != nil {
-			return Config{}, fmt.Errorf("IMAGE_MESSAGES_ENABLED must be a boolean")
-		}
-		cfg.ImageMessagesEnabled = enabled
-	}
 	if cfg.Environment == EnvironmentLocal {
 		if cfg.DatabaseURL == "" {
 			cfg.DatabaseURL = "postgres://chat:chat@localhost:5432/chat?sslmode=disable"

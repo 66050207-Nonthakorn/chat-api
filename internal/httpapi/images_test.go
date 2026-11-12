@@ -38,7 +38,7 @@ func (s imageTestStore) Get(context.Context, string) (imagestore.Object, error) 
 func TestImageUploadRejectsBusyCapacityBeforeReadingBody(t *testing.T) {
 	slots := make(chan struct{}, 1)
 	slots <- struct{}{}
-	h := handler{config: config.Config{ImageMessagesEnabled: true}, images: imageTestStore{}, imageUploadSlots: slots}
+	h := handler{images: imageTestStore{}, imageUploadSlots: slots}
 	body := &gatedImageBody{data: []byte("unread")}
 	r := httptest.NewRequest(http.MethodPost, "/", body)
 	r.Header.Set("Content-Type", "multipart/form-data; boundary=test")
@@ -51,7 +51,7 @@ func TestImageUploadRejectsBusyCapacityBeforeReadingBody(t *testing.T) {
 
 func TestImageUploadRequiresExplicitAdmissionBeforeReadingBody(t *testing.T) {
 	h := NewHandler(config.Config{
-		Environment: config.EnvironmentLocal, EnableLocalTestIdentity: true, ImageMessagesEnabled: true,
+		Environment: config.EnvironmentLocal, EnableLocalTestIdentity: true,
 	}, nil, Options{Images: imageTestStore{}})
 	body := &gatedImageBody{data: []byte("unread")}
 	r := httptest.NewRequest(http.MethodPost, "/api/v1/rooms/"+demo.GroupRoomID+"/messages", body)

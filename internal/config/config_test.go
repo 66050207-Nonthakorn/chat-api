@@ -197,7 +197,6 @@ func setValidRuntimeEnv(t *testing.T, environment string) {
 	t.Setenv("IMAGE_ENDPOINT", "")
 	t.Setenv("IMAGE_ACCESS_KEY", "")
 	t.Setenv("IMAGE_SECRET_KEY", "")
-	t.Setenv("IMAGE_MESSAGES_ENABLED", "")
 	t.Setenv("HTTP_ADDR", "127.0.0.1:8080")
 	t.Setenv("CURSOR_HMAC_KEY", "test-room-cursor-signing-key-0123456789")
 	t.Setenv("APP_ORIGIN", "")

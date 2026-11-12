@@ -47,10 +47,6 @@ func (h *handler) sendImageMessage(w http.ResponseWriter, r *http.Request, roomI
 	clientClose := r.Close
 	r.Close = true
 	w.Header().Set("Connection", "close")
-	if !h.config.ImageMessagesEnabled {
-		writeError(w, r, http.StatusServiceUnavailable, "IMAGE_MESSAGES_DISABLED", "Image sending is not enabled yet", true, nil)
-		return
-	}
 	if h.images == nil || h.imageUploadSlots == nil {
 		dependencyUnavailable(w, r)
 		return

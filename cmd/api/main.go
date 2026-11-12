@@ -88,7 +88,7 @@ func run() error {
 			logDependencyHealth("postgres", false, "POSTGRES_SCHEMA_QUERY_FAILED")
 			return err
 		}
-		if err := migrations.CheckVersion(schemaVersion, cfg.ImageMessagesEnabled); err != nil {
+		if err := migrations.CheckVersion(schemaVersion, false); err != nil {
 			logDependencyHealth("postgres", false, "POSTGRES_SCHEMA_UNSUPPORTED")
 			return errors.New("database schema is not supported")
 		}

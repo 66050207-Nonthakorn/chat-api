@@ -342,8 +342,6 @@ resource "aws_ecs_task_definition" "service" {
         { name = "AWS_REGION", value = var.aws_region },
         { name = "IMAGE_BUCKET", value = aws_s3_bucket.media.id },
         ], each.key == "api" ? [
-        { name = "IMAGE_MESSAGES_ENABLED", value = tostring(var.enable_image_messages) },
-        ] : [], each.key == "api" ? [
         { name = "HTTP_ADDR", value = ":8080" },
         { name = "APP_ORIGIN", value = var.app_origin },
         { name = "OIDC_ISSUER", value = var.oidc_issuer },
