@@ -311,6 +311,10 @@ resource "aws_elasticache_replication_group" "valkey" {
 resource "aws_ecs_task_definition" "service" {
   for_each = var.enable_ecs_services ? local.service_settings : {}
 
+  lifecycle {
+    create_before_destroy = true
+  }
+
   family                   = "${local.name_prefix}-${each.key}"
   cpu                      = each.value.cpu
   memory                   = each.value.memory
