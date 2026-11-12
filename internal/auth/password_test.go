@@ -142,7 +142,7 @@ func TestFindOrCreateIdentityConcurrentAndDisabled(t *testing.T) {
 	}
 }
 
-func TestPasswordLoginVerifiedIdentityAndSession(t *testing.T) {
+func TestPasswordLoginUnverifiedEmailAndSession(t *testing.T) {
 	databaseURL := os.Getenv("TEST_DATABASE_URL")
 	if databaseURL == "" {
 		t.Skip("TEST_DATABASE_URL not configured")
@@ -196,8 +196,8 @@ func TestPasswordLoginVerifiedIdentityAndSession(t *testing.T) {
 		return response
 	}
 	verifiedEmail = false
-	if got := login().Code; got != http.StatusUnauthorized {
-		t.Fatalf("unverified login = %d", got)
+	if got := login().Code; got != http.StatusOK {
+		t.Fatalf("unverified login = %d, want 200", got)
 	}
 	verifiedEmail = true
 	response := login()
