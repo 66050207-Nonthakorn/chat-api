@@ -1,0 +1,11 @@
+output "vpc_id" { value = aws_vpc.chat.id }
+output "private_subnet_ids" { value = aws_subnet.private[*].id }
+output "data_subnet_ids" { value = aws_subnet.data[*].id }
+output "alb_security_group_id" { value = aws_security_group.alb.id }
+output "api_target_group_arn" { value = aws_lb_target_group.api.arn }
+output "alb_dns_name" { value = aws_lb.api.dns_name }
+output "frontend_bucket" { value = aws_s3_bucket.frontend.id }
+output "cloudfront_domain" { value = aws_cloudfront_distribution.chat.domain_name }
+output "cloudfront_id" { value = aws_cloudfront_distribution.chat.id }
+output "oidc_issuer" { value = "https://cognito-idp.${var.aws_region}.amazonaws.com/${aws_cognito_user_pool.chat.id}" }
+output "oidc_client_id" { value = aws_cognito_user_pool_client.chat.id }
