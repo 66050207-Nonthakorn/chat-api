@@ -33,6 +33,18 @@ func TestLiveHealthDoesNotDependOnExternalServices(t *testing.T) {
 	}
 }
 
+func TestHealthResponsesAreNotCached(t *testing.T) {
+	for _, path := range []string{"/health/live", "/health/ready"} {
+		for _, check := range []health.ReadinessCheck{nil, func(context.Context) error { return nil }} {
+			response := httptest.NewRecorder()
+			health.NewHandler(check).ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+			if got := response.Header().Get("Cache-Control"); got != "no-store" {
+				t.Errorf("%s Cache-Control = %q, want no-store", path, got)
+			}
+		}
+	}
+}
+
 func TestReadyHealthReturnsUnavailableWithoutLeakingDependencyError(t *testing.T) {
 	handler := health.NewHandler(func(context.Context) error {
 		return errors.New("database password=private")

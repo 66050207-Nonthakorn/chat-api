@@ -104,3 +104,30 @@ func TestConcurrentGroupAdditionsRespectLimit(t *testing.T) {
 		t.Fatalf("member count = %d, error = %v", count, err)
 	}
 }
+
+func TestGroupManagementPermissions(t *testing.T) {
+	s := newTestServer(t, httpapi.Options{})
+	room := demo.GroupRoomID
+	check := func(method, path, user, body string, want int) {
+		t.Helper()
+		response, data := s.request(t, method, path, user, body)
+		if response.StatusCode != want {
+			t.Fatalf("%s %s: got %d want %d: %s", method, path, response.StatusCode, want, data)
+		}
+	}
+	base := "/api/v1/rooms/" + room
+	check(http.MethodPatch, base, demo.UserBID, `{"title":"No"}`, http.StatusNotFound)
+	check(http.MethodPatch, base, demo.UserAID, `{"title":"  New name  "}`, http.StatusNoContent)
+	var name string
+	if err := s.pool.QueryRow(context.Background(), `SELECT title FROM rooms WHERE room_id=$1::uuid`, room).Scan(&name); err != nil || name != "New name" {
+		t.Fatalf("title %q: %v", name, err)
+	}
+	check(http.MethodDelete, base+"/members/"+demo.UserAID, demo.UserAID, "", http.StatusNotFound)
+	check(http.MethodDelete, base+"/members/"+demo.UserAID, demo.UserBID, "", http.StatusNotFound)
+	check(http.MethodDelete, base+"/members/"+demo.UserBID, demo.UserAID, "", http.StatusNoContent)
+	check(http.MethodGet, base+"/members", demo.UserBID, "", http.StatusNotFound)
+	check(http.MethodPost, base+"/messages", demo.UserBID, `{"client_message_id":"cccccccc-cccc-4ccc-8ccc-cccccccccccc","text":"removed"}`, http.StatusNotFound)
+	check(http.MethodPost, base+"/members", demo.UserAID, `{"member_ids":["`+demo.UserBID+`"],"request_id":"dddddddd-dddd-4ddd-8ddd-dddddddddddd"}`, http.StatusOK)
+	check(http.MethodDelete, base+"/members/"+demo.UserBID, demo.UserBID, "", http.StatusNoContent)
+	check(http.MethodGet, base+"/members", demo.UserBID, "", http.StatusNotFound)
+}

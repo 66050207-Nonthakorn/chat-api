@@ -66,6 +66,9 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	if authServer != nil {
+		authServer.SetPublicLimiter(rateLimiter)
+	}
 
 	logger := slog.Default()
 	realtimeServer, err := realtime.NewServer(context.Background(), pool, valkey, cfg, sessionRules, realtime.Options{Logger: logger, RateLimiter: rateLimiter})

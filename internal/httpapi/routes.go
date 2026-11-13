@@ -30,6 +30,8 @@ func (h *handler) routes(health http.Handler) http.Handler {
 	rooms.POST("", gin.WrapF(h.createRoom))
 
 	room := rooms.Group("/:roomID", bindRoomPath)
+	room.PATCH("", gin.WrapF(h.renameGroup))
+	room.DELETE("/members/:userID", func(c *gin.Context) { c.Request.SetPathValue("userID", c.Param("userID")); c.Next() }, gin.WrapF(h.removeGroupMember))
 	room.GET("/members", gin.WrapF(h.listMembers))
 	room.POST("/members", gin.WrapF(h.addMembers))
 	room.GET("/messages", gin.WrapF(h.messageHistory))

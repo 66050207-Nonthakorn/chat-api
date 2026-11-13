@@ -419,3 +419,103 @@ func (h *handler) listMembers(w http.ResponseWriter, r *http.Request) {
 		Items []groupMember `json:"items"`
 	}{items})
 }
+
+type renameGroupRequest struct {
+	Title string `json:"title"`
+}
+
+// lockManagedGroup serializes membership changes with message writes and additions.
+func (h *handler) lockManagedGroup(ctx context.Context, tx pgx.Tx, roomID, actor string) (string, string, error) {
+	var owner, role string
+	err := tx.QueryRow(ctx, `SELECT owner_user_id::text FROM rooms WHERE room_id=$1::uuid AND kind='group' FOR UPDATE`, roomID).Scan(&owner)
+	if err != nil {
+		return "", "", err
+	}
+	err = tx.QueryRow(ctx, `SELECT member_role FROM room_memberships WHERE room_id=$1::uuid AND user_id=$2::uuid`, roomID, actor).Scan(&role)
+	return owner, role, err
+}
+
+func (h *handler) renameGroup(w http.ResponseWriter, r *http.Request) {
+	var req renameGroupRequest
+	if !decodeManagement(w, r, &req) {
+		return
+	}
+	req.Title = strings.TrimSpace(req.Title)
+	if req.Title == "" || strings.ContainsRune(req.Title, 0) || utf8.RuneCountInString(req.Title) > 200 {
+		writeValidationError(w, r, "title", "invalid")
+		return
+	}
+	p, _ := auth.PrincipalFromContext(r.Context())
+	ctx, cancel := queryContext(r)
+	defer cancel()
+	tx, err := h.pool.Begin(ctx)
+	if err != nil {
+		dependencyUnavailable(w, r)
+		return
+	}
+	defer tx.Rollback(context.Background())
+	owner, role, err := h.lockManagedGroup(ctx, tx, r.PathValue("roomID"), p.UserID)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && owner != p.UserID && role != "admin") {
+		writeRoomNotFound(w, r)
+		return
+	}
+	if err != nil {
+		dependencyUnavailable(w, r)
+		return
+	}
+	_, err = tx.Exec(ctx, `UPDATE rooms SET title=$2 WHERE room_id=$1::uuid`, r.PathValue("roomID"), req.Title)
+	if err == nil {
+		err = tx.Commit(ctx)
+	}
+	if err != nil {
+		dependencyUnavailable(w, r)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *handler) removeGroupMember(w http.ResponseWriter, r *http.Request) {
+	target := r.PathValue("userID")
+	if !uuid.IsCanonical(target) {
+		writeRoomNotFound(w, r)
+		return
+	}
+	p, _ := auth.PrincipalFromContext(r.Context())
+	ctx, cancel := queryContext(r)
+	defer cancel()
+	tx, err := h.pool.Begin(ctx)
+	if err != nil {
+		dependencyUnavailable(w, r)
+		return
+	}
+	defer tx.Rollback(context.Background())
+	owner, role, err := h.lockManagedGroup(ctx, tx, r.PathValue("roomID"), p.UserID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeRoomNotFound(w, r)
+		return
+	}
+	if err != nil {
+		dependencyUnavailable(w, r)
+		return
+	}
+	// An owner cannot leave without transferring ownership; admins cannot remove admins.
+	var targetRole string
+	err = tx.QueryRow(ctx, `SELECT member_role FROM room_memberships WHERE room_id=$1::uuid AND user_id=$2::uuid`, r.PathValue("roomID"), target).Scan(&targetRole)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && (target == owner || (target != p.UserID && owner != p.UserID && (role != "admin" || targetRole == "admin")))) {
+		writeRoomNotFound(w, r)
+		return
+	}
+	if err != nil {
+		dependencyUnavailable(w, r)
+		return
+	}
+	_, err = tx.Exec(ctx, `DELETE FROM room_memberships WHERE room_id=$1::uuid AND user_id=$2::uuid`, r.PathValue("roomID"), target)
+	if err == nil {
+		err = tx.Commit(ctx)
+	}
+	if err != nil {
+		dependencyUnavailable(w, r)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}

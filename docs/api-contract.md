@@ -8,7 +8,7 @@
 
 - ใช้ origin เดียวผ่าน CloudFront: `/api/*` และ `/auth/*` ไป ALB, ไฟล์หน้าเว็บไป S3; การเชื่อมต่อสดใช้ `/api/v1/ws`
 - HTTP ใช้ส่งข้อความและอ่านข้อมูล; WebSocket ใช้ติดตามห้องและรับเหตุการณ์ ไม่ใช้ส่งคำสั่งสร้างข้อความ
-- เดโมใช้ผู้ใช้และห้องที่เตรียมไว้ ไม่มี API สมัครสาธารณะ สร้างห้อง จัดการสมาชิก read receipt, typing, presence, edit/delete หรือไฟล์แนบใน v1
+- ไม่มี API สมัครสาธารณะ, read receipt, typing, presence หรือแก้ไข/ลบข้อความ
 - HTTP JSON ใช้ `Content-Type: application/json`; เวลาเป็น UTC RFC 3339 เช่น `2026-10-30T10:00:00Z`
 - `user_id`, `room_id`, `message_id`, `client_message_id` เป็น UUID แบบ canonical lowercase; รหัส opaque อื่นห้ามตีความ
 - `seq`, `after_seq`, `before_seq`, `through_seq`, `next_after_seq` เป็น **decimal string** เพื่อไม่ให้ JavaScript สูญเสียความแม่นยำ; ใช้ BigInt เปรียบเทียบ ไม่เรียงแบบข้อความ ตัวอย่าง `"0"`, `"42"` ไม่รับค่าติดลบหรือเลขศูนย์นำหน้า
@@ -103,6 +103,8 @@ Logout หมายถึงออกจาก session ของแอป กา
 | `GET /api/v1/users?q=…&limit=20&cursor=…` | ค้นหาผู้ใช้ active ด้วยส่วนหนึ่งของชื่อ โดยไม่สนตัวพิมพ์เล็กใหญ่ | 200 `{items: [{user_id, display_name}], next_cursor}` |
 | `GET /api/v1/rooms/{room_id}/members` | รายชื่อสมาชิกกลุ่มปัจจุบัน รวมบัญชี inactive | 200 `{items: [{user_id, display_name, role, is_active}]}` |
 | `POST /api/v1/rooms/{room_id}/members` | owner/admin เพิ่มสมาชิกกลุ่มทันที | 200 `{room_id, replayed}` |
+| `PATCH /api/v1/rooms/{room_id}` | owner/admin เปลี่ยนชื่อกลุ่ม | 204 |
+| `DELETE /api/v1/rooms/{room_id}/members/{user_id}` | ออกจากกลุ่มหรือนำสมาชิกออก | 204 |
 | `POST /api/v1/rooms/{room_id}/messages` | บันทึกข้อความพร้อม outbox; JSON สำหรับข้อความ และ multipart สำหรับรูป | 201 เมื่อสร้างใหม่, 200 เมื่อ replay |
 | `GET /api/v1/rooms/{room_id}/messages?limit=50&before_seq=…` | ประวัติจากใหม่ไปเก่า | 200 ตามรูปแบบด้านล่าง |
 | `GET /api/v1/rooms/{room_id}/sync?after_seq=0&limit=100&through_seq=…` | ดึงช่วงที่พลาดจากเก่าไปใหม่ | 200 ตามรูปแบบด้านล่าง |
@@ -120,7 +122,7 @@ Logout หมายถึงออกจาก session ของแอป กา
 
 Migration 0003 เพิ่มตาราง request IDs แบบ additive แต่ binary รุ่นก่อนหน้าที่รองรับถึง schema 2 จะไม่ผ่าน readiness เมื่อ schema เป็น 3 จึงต้อง deploy API และ worker รุ่นที่รองรับ schema 3 ให้ครบก่อนรัน migration; endpoint สร้างกลุ่มและเพิ่มสมาชิกจะยังไม่พร้อมจน migration สำเร็จ หลัง migration ห้าม rollback ไป binary ที่ไม่รองรับ schema 3
 
-ห้องไม่มีอยู่หรือผู้ใช้ไม่เป็นสมาชิกตอบ 404 แบบเดียวกันเพื่อไม่เปิดเผยว่าห้องมีอยู่ ส่วน role/การจัดการสมาชิกยังไม่มี endpoint ในเดโม; การทดสอบลบสมาชิกใช้ fixture/admin script ที่ควบคุมสิทธิ์
+การเปลี่ยนชื่อใช้ `{"title":"ชื่อกลุ่ม"}` โดย owner หรือ admin ชื่อต้องมี 1–200 ตัวอักษรหลัง trim สมาชิกออกจากกลุ่มได้ด้วยการลบ user ID ของตัวเอง เจ้าของนำสมาชิกออกได้ และ admin นำสมาชิกทั่วไปออกได้ เจ้าของออกจากกลุ่มหรือถูกนำออกไม่ได้ และ admin นำ admin คนอื่นออกไม่ได้ ห้อง ผู้ใช้ หรือสิทธิ์ที่ไม่ถูกต้องตอบ 404 แบบเดียวกันเพื่อไม่เปิดเผยข้อมูล การเปลี่ยนชื่อและลบสมาชิกล็อกห้องร่วมกับการส่งข้อความและเพิ่มสมาชิก
 
 ### รายการห้อง
 
