@@ -48,9 +48,11 @@ func (d *DrainController) Check(ctx context.Context) error {
 func NewHandler(check ReadinessCheck) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health/live", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
 		httpjson.Write(w, http.StatusOK, healthResponse{Status: "ok"})
 	})
 	mux.HandleFunc("GET /health/ready", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
 		if check == nil || check(r.Context()) != nil {
 			httpjson.Write(w, http.StatusServiceUnavailable, healthResponse{Status: "unavailable"})
 			return
