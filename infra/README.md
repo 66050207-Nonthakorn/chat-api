@@ -1,11 +1,21 @@
 # AWS infrastructure
 
-This Terraform root manages backend-owned AWS resources only. It consumes a VPC, private subnets, the shared ALB security group, the API target group, and private-subnet egress from the platform/network owner. It creates a private backend media bucket for chat images. Networking, ingress, frontend hosting, CloudFront, and Cognito remain externally managed.
+The backend root groups Terraform by responsibility: `media.tf` for image
+storage, `compute.tf` and `services.tf` for containers, `database.tf` and
+`cache.tf` for data services, `security-groups.tf` and `iam.tf` for access,
+`secrets.tf` for runtime secret shells, and `telemetry.tf` for monitoring.
+`variables.tf`, `outputs.tf`, and `versions.tf` define the root's interface
+and provider configuration. Terraform loads all `.tf` files in the directory
+as one configuration.
+
+This Terraform root manages backend-owned AWS resources only. It consumes a VPC, separate private compute and data subnets, the shared ALB security group, the API target group, and compute-subnet egress from the platform/network owner. It creates a private backend media bucket for chat images. Networking, ingress, frontend hosting, CloudFront, and Cognito remain externally managed.
+
+Set `private_subnet_ids` to the compute subnets and `data_subnet_ids` to separate data subnets across at least two Availability Zones. Existing database and cache nodes do not automatically move when a subnet group changes. Plan a migration before applying this change to a live deployment; AWS does not allow removing a subnet from a cache subnet group while a node uses it.
 
 ## Resources
 
 - ECR repositories with immutable image tags, push scanning, and encryption for the API and worker.
-- An ECS cluster and optional Fargate API and worker services with fixed task counts, private ENIs, digest-pinned images, and rolling-deployment rollback.
+- An ECS cluster and optional Fargate API and worker services with private ENIs, digest-pinned images, and rolling-deployment rollback. The API uses bounded CPU-based autoscaling; the worker has a fixed count.
 - Private, encrypted RDS PostgreSQL with managed master credentials, automated backups, PostgreSQL log exports, deletion protection, and final snapshots.
 - Private, encrypted, TLS-only node-based ElastiCache Valkey with an AUTH token sent through the provider's write-only argument.
 - Private backend S3 bucket for processed images with public access blocked, bucket-owner-enforced uploads, encryption, TLS-only access, and API/worker roles scoped to `images/*`.
@@ -175,7 +185,9 @@ Example values for `db.t4g.small`, 20 GiB gp3, a single `cache.t4g.micro` node, 
 4. Apply with `enable_ecs_services=false`, provision a database application user, push immutable API/worker images to the created ECR repositories, and populate all five runtime Secrets Manager secret shells outside Terraform.
 5. Apply a valid `migration_image_digest`, run the one-off migration task to completion, then set real API/worker `container_image_digests` and `enable_ecs_services=true`. Review each plan and apply through the approved AWS identity. The API listens on port 8080. The ALB health check must use `/health/ready`; public ingress and TLS remain shared-stack responsibilities.
 
-This module does not create or configure Cognito, OTel instrumentation/collector, autoscaling, frontend hosting, or external notification delivery. The production authentication configuration is injected from the externally owned OIDC provider. ECS provisioning and local checks are not evidence of live production readiness.
+The API targets 60% average CPU with a 60-second scale-out and 300-second scale-in cooldown. `api_desired_count` sets the initial and minimum API count (default 2); `api_max_count` sets the maximum (default 4). The worker remains at `worker_desired_count` through equal scaling bounds. Terraform ignores subsequent ECS desired-count drift so scaling is not undone by an apply. Review the database connection budget including both services, a migration task, and up to twice the task counts during rolling deployments before choosing a maximum. CPU alone does not measure WebSocket pressure or outbox backlog; monitor those signals and validate thresholds under realistic load. Scale-in can disconnect sockets, which must reconnect and sync. The defaults are starting points, not measured capacity, and scaling increases cost.
+
+This module does not create or configure Cognito, OTel instrumentation/collector, frontend hosting, or external notification delivery. The production authentication configuration is injected from the externally owned OIDC provider. ECS provisioning and local checks are not evidence of live production readiness.
 
 ## Cost, replacement, retention, and cleanup
 

@@ -41,12 +41,22 @@ variable "vpc_id" {
 }
 
 variable "private_subnet_ids" {
-  description = "At least two private subnet IDs in different AZs from the shared networking stack."
+  description = "At least two private compute subnet IDs in different AZs from the shared networking stack."
   type        = list(string)
 
   validation {
     condition     = length(var.private_subnet_ids) >= 2 && length(distinct(var.private_subnet_ids)) == length(var.private_subnet_ids)
     error_message = "private_subnet_ids must contain at least two distinct subnet IDs."
+  }
+}
+
+variable "data_subnet_ids" {
+  description = "At least two private data subnet IDs in different AZs, separate from compute subnets."
+  type        = list(string)
+
+  validation {
+    condition     = length(var.data_subnet_ids) >= 2 && length(distinct(var.data_subnet_ids)) == length(var.data_subnet_ids) && length(setintersection(toset(var.data_subnet_ids), toset(var.private_subnet_ids))) == 0
+    error_message = "data_subnet_ids must contain at least two distinct subnet IDs separate from private_subnet_ids."
   }
 }
 
@@ -177,13 +187,24 @@ variable "api_task_memory_mib" {
 }
 
 variable "api_desired_count" {
-  description = "Fixed API task count; autoscaling is intentionally not included."
+  description = "Initial and minimum API task count."
   type        = number
   default     = 2
 
   validation {
-    condition     = var.api_desired_count >= 1 && floor(var.api_desired_count) == var.api_desired_count
-    error_message = "api_desired_count must be a positive whole number."
+    condition     = var.api_desired_count >= 2 && floor(var.api_desired_count) == var.api_desired_count
+    error_message = "api_desired_count must be a whole number of at least 2."
+  }
+}
+
+variable "api_max_count" {
+  description = "Maximum API task count for CPU-based autoscaling."
+  type        = number
+  default     = 4
+
+  validation {
+    condition     = var.api_max_count >= var.api_desired_count && floor(var.api_max_count) == var.api_max_count
+    error_message = "api_max_count must be a whole number at least as large as api_desired_count."
   }
 }
 
@@ -200,7 +221,7 @@ variable "worker_task_memory_mib" {
 }
 
 variable "worker_desired_count" {
-  description = "Fixed worker task count; autoscaling is intentionally not included."
+  description = "Fixed worker task count."
   type        = number
   default     = 1
 

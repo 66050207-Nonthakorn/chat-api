@@ -9,6 +9,7 @@ environment    = "dev"
 # shared-network resources.
 vpc_id                        = "vpc-0123456789abcdef0"
 private_subnet_ids            = ["subnet-0123456789abcdef0", "subnet-0123456789abcdef1"]
+data_subnet_ids               = ["subnet-0123456789abcdef2", "subnet-0123456789abcdef3"]
 shared_alb_security_group_id  = "sg-0123456789abcdef0"
 api_target_group_arn          = "arn:aws:elasticloadbalancing:ap-southeast-1:123456789012:targetgroup/cloudchat-dev-api/0123456789abcdef"
 task_egress_ipv4_cidrs         = ["0.0.0.0/0"]
